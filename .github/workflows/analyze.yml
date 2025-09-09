@@ -3,38 +3,72 @@ name: ECU Analysis
 on:
   push:
     paths:
-      - 'bins/**/*.bin'
-      - 'bins/*.bin'
+      - 'rawdata/**/*.bin'
+      - 'rawdata/*.bin'
+  workflow_dispatch:
+    inputs:
+      pref_mode:
+        description: 'sprit sparen: power (möglichst viel Leistung) oder smooth (ruhiger schalten)'
+        required: false
+        type: choice
+        options: [power, smooth]
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
     container: ghcr.io/tiefengrund/ECUlibre/med17-analyzer:latest
     permissions:
-      contents: read
+      contents: write
       packages: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Run analyzer on changed BINs
+      - name: Preference check (power/smooth)
+        id: pref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          DISPATCH_MODE: ${{ github.event.inputs.pref_mode }}
+        run: |
+          bash scripts/preference_guard.sh
+        shell: bash
+
+      - name: Run analyzer on changed BINs in rawdata/
+        if: ${{ steps.pref.outputs.MODE != '' }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p med17_analysis
+          mkdir -p med17_analysis reports
           BEFORE=${{ github.event.before }}
           SHA=${{ github.sha }}
-          CHANGED=$(git diff --name-only "$BEFORE" "$SHA" -- 'bins/**/*.bin' 'bins/*.bin' || true)
+          CHANGED=$(git diff --name-only "$BEFORE" "$SHA" -- 'rawdata/**/*.bin' 'rawdata/*.bin' || true)
           if [ -z "$CHANGED" ]; then
-            echo "Keine neuen/änderten BINs."
+            echo "No new/changed BINs in rawdata/."
             exit 0
           fi
           for f in $CHANGED; do
-            base=$(basename "$f")
-            out="med17_analysis/${base%.*}"
-            mkdir -p "$out"
-            echo "Analysiere $f -> $out"
+            base=$(basename "$f"); stem="${base%.*}"
+            out="med17_analysis/$stem"; mkdir -p "$out"
+            echo "Analyzing $f -> $out (mode=${{ steps.pref.outputs.MODE }})"
             python /app/analyze_med17.py "$f" --out "$out"
+            python /app/analyze_and_report.py --bin "$f" --analysis-dir "$out" --reports-root reports --mode "${{ steps.pref.outputs.MODE }}"
           done
+
+      - name: Commit reports back to repo
+        if: always()
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add reports/ prefs/mode
+          if git diff --cached --quiet; then
+            echo "No report changes to commit."
+            exit 0
+          fi
+          git commit -m "[skip ci] Add analysis reports (mode: ${{ steps.pref.outputs.MODE }})"
+          git push
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
