@@ -1,0 +1,20 @@
+# Schema for ECU dataset metadata
+$schema: "https://json-schema.org/draft/2020-12/schema"
+type: object
+required: [schema_version, brand, model, generation, ecu_vendor, ecu_model, firmware, region, hashes]
+properties:
+  schema_version: { type: string }
+  brand: { type: string }
+  model: { type: string }
+  generation: { type: string }
+  ecu_vendor: { type: string }
+  ecu_model: { type: string }
+  firmware: { type: string }
+  region: { type: string }
+  notes: { type: string }
+  hashes:
+    type: object
+    properties:
+      raw_sha256: { type: string }
+      size_bytes: { type: integer }
+

@@ -1,0 +1,8 @@
+patch_name: lane_assist_disable
+semver: 0.1.0
+description: Disable lane keeping assist (LKAS/LKA).
+rules:
+  - match:
+      feature: 'lane_assist'
+    action: disable
+tests: []
