@@ -16,7 +16,6 @@ on:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    container: ghcr.io/tiefengrund/ECUlibre/med17-analyzer:latest
     permissions:
       contents: write
       packages: read
