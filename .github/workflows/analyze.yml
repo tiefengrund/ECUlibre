@@ -61,12 +61,14 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          git add reports/ prefs/mode
+          # stage only if dirs exist
+          if [ -d reports ]; then git add -A reports/; fi
+          if [ -d prefs ];   then git add -A prefs/;   fi
           if git diff --cached --quiet; then
             echo "No report changes to commit."
             exit 0
           fi
-          git commit -m "[skip ci] Add analysis reports (mode: ${{ steps.pref.outputs.MODE }})"
+          git commit -m "[skip ci] Add analysis reports"
           git push
 
       - name: Upload artifacts
