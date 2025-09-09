@@ -1,0 +1,13 @@
+schema_version: "1.0"
+brand: "Audi"
+model: "A6"
+generation: "C5 (Typ 4B)"
+ecu_vendor: "Bosch"
+ecu_model: "MD1"
+firmware: "FW0001"
+region: "EU"
+hashes:
+  raw_sha256: ""
+  size_bytes: 0
+notes: ""
+
