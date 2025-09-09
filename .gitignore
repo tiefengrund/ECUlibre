@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+med17_analysis/
+.DS_Store
+.vscode/
+.idea/
