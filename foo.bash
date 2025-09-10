@@ -1,105 +1,94 @@
-cat > scripts/migrate_gen_paths.py <<'PY'
 #!/usr/bin/env python3
-import os, sys, re, subprocess, shutil, csv, pathlib, yaml
+import os, re, csv, hashlib, sys
+from pathlib import Path
+from intelhex import IntelHex
 
-ROOT = pathlib.Path(".").resolve()
-IDX_FILE = ROOT / "docs" / "vehicle-index.md"
-MANIFEST = ROOT / "docs" / "vehicle-manifest.csv"
-BRANDS_DIR = ROOT / "docs" / "brands"
+ROOT = Path(".").resolve()
+OUTDIR = ROOT / "dist" / "deepseek" / "incoming"
+MANIFEST = OUTDIR / "manifest-hex.csv"
 
-def slug(s: str) -> str:
-    s = (s or "").lower()
-    s = re.sub(r"[ .()/\\]+", "-", s)
-    s = re.sub(r"[^a-z0-9_-]", "", s)
-    s = re.sub(r"-{2,}", "-", s).strip("-")
+def slug(s:str)->str:
+    s=(s or "").lower()
+    s=re.sub(r"[ .()/\\]+","-",s); s=re.sub(r"[^a-z0-9_-]","",s)
+    s=re.sub(r"-{2,}","-",s).strip("-")
     return s or "na"
 
-def git_mv(src: pathlib.Path, dst: pathlib.Path):
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        subprocess.run(["git","mv","-k",str(src),str(dst)], check=True)
-    except Exception:
-        shutil.move(str(src), str(dst))
+def sha256(p:Path)->str:
+    h=hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda:f.read(1<<20), b""): h.update(chunk)
+    return h.hexdigest()
 
-def rebuild_docs_from_manifest():
-    if not MANIFEST.exists():
-        print(f"[warn] manifest not found: {MANIFEST}", file=sys.stderr)
-        return
-    # Index neu schreiben
-    lines = ["# Vehicle Index / Fahrzeug-Index\n",
-             "| Brand | Model | Generation/Platform | Aliases | Path |\n",
-             "|------:|:----- |:--------------------|:------- |:---- |\n"]
-    # Brand-Seiten vorbereiten
-    brand_tables = {}
-    with MANIFEST.open("r", encoding="utf-8") as f:
-        rdr = csv.DictReader(f)
-        for row in rdr:
-            brand = row["brand"]; model=row["model"]
-            gen = row["generation_or_platform"]; aliases=row.get("aliases","")
-            gen_slug = slug(gen)
-            relpath = f"rawdata/{brand}/{model}/{gen_slug}"
-            lines.append(f"| {brand} | {model} | {gen} | {aliases} | `{relpath}` |\n")
-            bslug = slug(brand)
-            brand_tables.setdefault(bslug, {"title":brand, "rows":[]})
-            brand_tables[bslug]["rows"].append(f"| {model} | {gen} | {aliases} | `{relpath}` |\n")
-    IDX = "".join(lines)
-    IDX_FILE.write_text(IDX, encoding="utf-8")
-    BRANDS_DIR.mkdir(parents=True, exist_ok=True)
-    for bslug, data in brand_tables.items():
-        bdir = BRANDS_DIR / bslug
-        bdir.mkdir(parents=True, exist_ok=True)
-        md = f"# {data['title']}\n\n| Model | Generation/Platform | Aliases | Path |\n|:----- |:--------------------|:------- |:---- |\n" + "".join(sorted(set(data["rows"])))
-        (bdir / "README.md").write_text(md, encoding="utf-8")
+def meta_info(meta:Path):
+    d={k:"" for k in ["brand","model","generation","ecu_vendor","ecu_model","firmware","region"]}
+    if meta.exists():
+        try:
+            import yaml
+            y=yaml.safe_load(meta.read_text(encoding="utf-8")) or {}
+            for k in d: d[k]=str(y.get(k,"") or "")
+        except Exception:
+            for line in meta.read_text(encoding="utf-8",errors="ignore").splitlines():
+                if ":" in line:
+                    k,v=line.split(":",1); k=k.strip(); v=v.strip().strip("'\"")
+                    if k in d: d[k]=v
+    return d
+
+def export_bin(b:Path, base:int=0):
+    parts=b.resolve().parts
+    try: i=parts.index("rawdata")
+    except ValueError: return None
+    brand,model,gen = (parts[i+1], parts[i+2], parts[i+3]) if len(parts)>i+3 else ("","","")
+    ecu   = parts[i+4] if len(parts)>i+4 else ""
+    fwreg = parts[i+5] if len(parts)>i+5 else ""
+    meta  = ROOT.joinpath(*parts[i:i+6], "metadata.yml")
+
+    mi=meta_info(meta)
+    brand_s=slug(mi["brand"] or brand); model_s=slug(mi["model"] or model)
+    gen_s=slug(mi["generation"] or gen)
+    ecu_s=slug((mi["ecu_vendor"]+"-"+mi["ecu_model"]).strip("-") if (mi["ecu_vendor"] or mi["ecu_model"]) else ecu)
+    fw_s=slug(mi["firmware"] or (fwreg.split("-")[0] if "-" in fwreg else fwreg))
+    reg_s=slug(mi["region"] or (fwreg.split("-")[1] if "-" in fwreg else ""))
+
+    short=sha256(b)[:8]
+    base_name="-".join([x for x in [brand_s,model_s,gen_s,ecu_s,fw_s,reg_s] if x]) or "dataset"
+
+    outdir=OUTDIR/brand_s/model_s/gen_s/ecu_s/(fw_s + (f"-{reg_s}" if reg_s else ""))
+    outdir.mkdir(parents=True, exist_ok=True)
+    hex_path=outdir/f"{base_name}-{short}.hex"
+    sidecar =outdir/f"{base_name}-{short}.json"
+
+    data=b.read_bytes()
+    ih=IntelHex(); ih.frombytes(data, offset=base); ih.tofile(hex_path, format="hex")
+
+    sidecar.write_text(
+        '{\n' +
+        f'  "bin_rel": "{b.relative_to(ROOT)}",\n' +
+        f'  "meta_rel": "{meta.relative_to(ROOT) if meta.exists() else ""}",\n' +
+        f'  "hex_rel": "{hex_path.relative_to(ROOT)}",\n' +
+        f'  "base_addr": {base},\n' +
+        f'  "sha256_bin": "{sha256(b)}"\n' +
+        '}\n', encoding="utf-8"
+    )
+    return hex_path
 
 def main():
-    moved = 0
-    for mpath in ROOT.glob("rawdata/**/metadata.yml"):
-        parts = mpath.resolve().parts
-        try:
-            i = parts.index("rawdata")
-        except ValueError:
-            continue
-        # parts: rawdata / BRAND / MODEL / <gen...maybe multi> / ECU / FW / metadata.yml
-        if len(parts) < i+6:
-            continue
-        brand = parts[i+1]; model = parts[i+2]
-        ecu   = parts[-3]; fw = parts[-2]  # metadata.yml unter FW
-        gen_parts = parts[i+3:-3]
-        # generation aus YAML (falls vorhanden), sonst aus gen_parts joinen
-        try:
-            data = yaml.safe_load(mpath.read_text(encoding="utf-8")) or {}
-            gen_text = str(data.get("generation","") or " ".join(gen_parts))
-        except Exception:
-            gen_text = " ".join(gen_parts)
-        gen_s = slug(gen_text)
-        # Zielpfad
-        dst_fw = ROOT / "rawdata" / brand / model / gen_s / ecu / fw
-        cur_fw = mpath.parent
-        if cur_fw.resolve() == dst_fw.resolve():
-            continue
-        print(f"move: {cur_fw} -> {dst_fw}")
-        dst_fw.parent.mkdir(parents=True, exist_ok=True)
-        git_mv(cur_fw, dst_fw)
-        moved += 1
-
-        # optional: workbench spiegeln
-        wb_cur = ROOT / "workbench" / brand / model / "/".join(gen_parts) / ecu / fw
-        wb_dst = ROOT / "workbench" / brand / model / gen_s / ecu / fw
-        # normalize Path objects
-        wb_cur = pathlib.Path(str(wb_cur).replace("//","/"))
-        wb_dst = pathlib.Path(str(wb_dst).replace("//","/"))
-        if wb_cur.exists() and wb_cur.resolve() != wb_dst.resolve():
-            print(f"move(workbench): {wb_cur} -> {wb_dst}")
-            wb_dst.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                subprocess.run(["git","mv","-k",str(wb_cur),str(wb_dst)], check=True)
-            except Exception:
-                shutil.move(str(wb_cur), str(wb_dst))
-
-    rebuild_docs_from_manifest()
-    print(f"done. moved FW dirs: {moved}")
+    created=[]
+    for p in ROOT.glob("rawdata/**/validated/*.bin"):
+        hp=export_bin(p)
+        if hp: created.append(hp)
+    if not created:
+        print("No .bin under rawdata/**/validated/", file=sys.stderr)
+        return 0
+    OUTDIR.mkdir(parents=True, exist_ok=True)
+    new=not MANIFEST.exists()
+    with MANIFEST.open("a", newline="", encoding="utf-8") as f:
+        w=csv.writer(f)
+        if new: w.writerow(["hex_rel","bin_rel","meta_rel","base_addr","sha256_bin"])
+        for sc in sorted(OUTDIR.rglob("*.json")):
+            import json
+            m=json.loads(sc.read_text(encoding="utf-8"))
+            w.writerow([m["hex_rel"], m["bin_rel"], m.get("meta_rel",""), m.get("base_addr",0), m["sha256_bin"]])
+    print(f"Exported {len(created)} HEX files → {OUTDIR}")
     return 0
 
-if __name__ == "__main__":
-    sys.exit(main())
-PY
+if __name__=="__main__": sys.exit(main())

@@ -1,0 +1,58 @@
+name: DeepSeek annotate (HEX)
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - 'dist/deepseek/incoming/**/*.hex'
+      - 'dist/deepseek/incoming/*.hex'
+
+permissions:
+  contents: read
+
+jobs:
+  annotate:
+    runs-on: ubuntu-latest
+    env:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DEEPSEEK_BASE_URL: https://api.deepseek.com
+      DEEPSEEK_MODEL: deepseek-reasoner
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Submit HEX chunks to DeepSeek (JSON annotations)
+        run: |
+          set -euo pipefail
+          python scripts/deepseek_submit_annotations.py
+
+      - name: Build HTML visualization
+        run: |
+          set -euo pipefail
+          python scripts/hex_visualize_annotations.py
+
+      - name: Summary
+        run: |
+          echo "### DeepSeek annotation reports" >> "$GITHUB_STEP_SUMMARY"
+          if compgen -G "reports/deepseek/*.html" > /dev/null; then
+            for f in reports/deepseek/*.html; do
+              echo "* $(basename "$f")" >> "$GITHUB_STEP_SUMMARY"
+            done
+          else
+            echo "* none" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepseek-annotations
+          path: |
+            reports/deepseek/*.json
+            reports/deepseek/*.html
