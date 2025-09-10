@@ -61,9 +61,8 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          # stage only if dirs exist
-          if [ -d reports ]; then git add -A reports/; fi
-          if [ -d prefs ];   then git add -A prefs/;   fi
+          if [ -d reports ]; then git add -A reports/ || true; fi
+          if [ -d prefs ];   then git add -A prefs/   || true; fi
           if git diff --cached --quiet; then
             echo "No report changes to commit."
             exit 0
