@@ -76,3 +76,11 @@ jobs:
           name: med17_analysis
           path: med17_analysis/
           retention-days: 14
+
+      - name: Upload RE artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: re-${{ github.run_id }}
+          path: recon/
+          retention-days: 21
