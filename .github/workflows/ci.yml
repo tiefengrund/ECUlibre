@@ -42,11 +42,16 @@ jobs:
             echo "bootstrap script not found -> skip"
           fi
 
-      - name: Shell lint (if scripts present)
+      - name: Shell lint (only sh/bash/dash/ksh)
         run: |
           set -euo pipefail
           if [ -d scripts ]; then
-            find scripts -maxdepth 1 -type f -perm -111 -print0 2>/dev/null | xargs -0 -r shellcheck
+            mapfile -t SH_FILES < <(grep -rlI -m1 -E '^#!.*\b(bash|sh|dash|ksh)\b' scripts || true)
+            if [ "${#SH_FILES[@]}" -gt 0 ]; then
+              shellcheck "${SH_FILES[@]}"
+            else
+              echo "no shell scripts found"
+            fi
           else
             echo "no scripts/ dir -> skip shellcheck"
           fi
