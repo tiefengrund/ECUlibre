@@ -1,30 +1,29 @@
-name: CI (openSUSE)
-
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-  workflow_dispatch:
-
-permissions: { contents: read }
-
 jobs:
-  suse:
+  arch:
     runs-on: ubuntu-latest
-    container: opensuse/leap:15.5
+    container: archlinux:latest
     steps:
-      - name: Install git
+      - name: Install git (container)
         run: |
-          zypper -n ref
-          zypper -n in -y git
+          pacman -Sy --noconfirm archlinux-keyring || true
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm git
+
       - uses: actions/checkout@v4
-      - name: Install tools
+
+      - name: Install tools (pacman + pip + gh)
         run: |
           set -euo pipefail
-          zypper -n in -y ShellCheck python3-pip zip || true
-          python3 -m pip install --upgrade pip || true
-          pip3 install pyyaml jsonschema intelhex || true
-      - name: Run common checks
-        run: bash scripts/ci_basic.sh || true
-      - uses: actions/upload-artifact@v4
-        with: { name: ci-artifacts-suse, path: out }
+          pacman -S --noconfirm shellcheck python-pip zip github-cli || true
+          pip install --upgrade pip || true
+          pip install pyyaml jsonschema intelhex || true
+
+      - name: Sanity check GitHub CLI
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # gh liest das automatisch
+        run: |
+          set -euo pipefail
+          gh --version
+          # ein paar schnelle Calls:
+          gh api rate_limit | jq '.resources.core.remaining'
+          gh workflow list | head -n 20
