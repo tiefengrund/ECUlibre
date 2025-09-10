@@ -3,7 +3,7 @@ import json, html, binascii
 from pathlib import Path
 
 IN_DIR = Path("dist/deepseek/incoming")
-ANN_DIR = Path("reports/deepseek")
+ANN_DIR = Path("reports/china-boeller")
 OUT_DIR = ANN_DIR
 
 def parse_hex_lines(text):

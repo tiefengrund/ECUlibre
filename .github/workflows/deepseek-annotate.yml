@@ -40,9 +40,9 @@ jobs:
 
       - name: Summary
         run: |
-          echo "### DeepSeek annotation reports" >> "$GITHUB_STEP_SUMMARY"
-          if compgen -G "reports/deepseek/*.html" > /dev/null; then
-            for f in reports/deepseek/*.html; do
+          echo "### China-Böller Berichte" >> "$GITHUB_STEP_SUMMARY"
+          if compgen -G "reports/china-boeller/*.html" > /dev/null; then
+            for f in reports/china-boeller/*.html; do
               echo "* $(basename "$f")" >> "$GITHUB_STEP_SUMMARY"
             done
           else
@@ -52,10 +52,10 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: deepseek-annotations
+          name: china-boeller
           path: |
-            reports/deepseek/*.json
-            reports/deepseek/*.html
+            reports/china-boeller/*.json
+            reports/china-boeller/*.html
       - name: Evaluate DeepSeek reports
         env:
           MIN_SCORE: "60"
@@ -63,9 +63,9 @@ jobs:
         run: |
           python scripts/evaluate_deepseek_reports.py
 
-      - name: Upload evaluation artifacts
+      - name: Upload evaluation artifacts (China-Böller)
         uses: actions/upload-artifact@v4
         with:
-          name: deepseek-eval
-          path: reports/deepseek/*.eval.json
+          name: china-boeller-eval
+          path: reports/china-boeller/*.eval.json
           if-no-files-found: ignore

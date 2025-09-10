@@ -2,7 +2,7 @@
 import os, sys, json, binascii
 from pathlib import Path
 
-ANN_DIR = Path("reports/deepseek")
+ANN_DIR = Path("reports/china-boeller")
 HEX_DIR = Path("dist/deepseek/incoming")
 MIN_SCORE = int(os.getenv("MIN_SCORE", "60"))
 FAIL_ON_LOW = os.getenv("FAIL_ON_LOW_SCORE", "0") == "1"
@@ -114,7 +114,7 @@ def eval_one(report_path: Path):
 def main():
     ann = sorted(ANN_DIR.glob("*.json"))
     if not ann:
-        print("no reports to evaluate in reports/deepseek", file=sys.stderr)
+        print("no reports to evaluate in reports/china-boeller", file=sys.stderr)
         return 0
 
     rows = []

@@ -1,3 +1,4 @@
+cat > .github/workflows/ci-core.yml <<'YML'
 name: CI (core)
 
 on:
@@ -91,3 +92,4 @@ jobs:
           body: "Automated update from CI."
           branch: "ci/update-generated-${{ github.run_id }}"
           base: ${{ github.ref_name || 'main' }}
+YML

@@ -7,7 +7,7 @@ BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 API_KEY  = os.getenv("DEEPSEEK_API_KEY", "")
 MODEL    = os.getenv("DEEPSEEK_MODEL", "deepseek-reasoner")  # oder deepseek-chat
 IN_DIR   = Path("dist/deepseek/incoming")
-OUT_DIR  = Path("reports/deepseek")
+OUT_DIR  = Path("reports/china-boeller")
 CHUNK_CHARS = 180000  # < 128k Tokens bleibt safe; konservativ splitten
 
 if not API_KEY:
