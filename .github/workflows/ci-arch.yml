@@ -1,43 +1,28 @@
 name: CI (Arch)
-
 on:
   push:
     branches: [ "main" ]
   pull_request:
   workflow_dispatch:
-
-permissions:
-  contents: read
-
+permissions: { contents: read }
 jobs:
   arch:
     runs-on: ubuntu-latest
     container: archlinux:latest
-
     steps:
       - name: Install git (container)
         run: |
           pacman -Sy --noconfirm archlinux-keyring || true
           pacman -Syu --noconfirm
           pacman -S --noconfirm git
-
-      - name: Checkout (inside container)
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install tools (pacman + pip)
         run: |
           set -euo pipefail
           pacman -S --noconfirm shellcheck python-pip zip || true
           pip install --upgrade pip || true
           pip install pyyaml jsonschema intelhex || true
-
       - name: Run common checks (POSIX-safe)
-        run: |
-          set -euo pipefail
-          bash scripts/ci_basic.sh || true
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-artifacts-arch
-          path: out
+        run: bash scripts/ci_basic.sh || true
+      - uses: actions/upload-artifact@v4
+        with: { name: ci-artifacts-arch, path: out }

@@ -1,43 +1,27 @@
 name: CI (Windows)
-
 on:
   push:
     branches: [ "main" ]
   pull_request:
   workflow_dispatch:
-
-permissions:
-  contents: read
-
+permissions: { contents: read }
 jobs:
   windows:
     runs-on: windows-latest
-
     steps:
-      - name: Checkout (full history)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
       - name: Install tools (Chocolatey + pip)
         shell: powershell
         run: |
           choco install -y shellcheck
           python -m pip install --upgrade pip
           pip install pyyaml jsonschema intelhex
-
       - name: Run common checks
         shell: bash
-        run: |
-          set -euo pipefail
-          bash scripts/ci_basic.sh
-
-      # Optional: Wenn DeepSeek-Outputs (HEX) vorhanden sind -> Import + Windows-ZIPs
+        run: bash scripts/ci_basic.sh
       - name: Import HEX → BIN & package Windows ZIPs (if output exists)
         shell: bash
         run: |
@@ -47,9 +31,7 @@ jobs:
           else
             echo "no DeepSeek HEX in dist/deepseek/output -> skip packaging"
           fi
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ci-artifacts-windows
           path: |
