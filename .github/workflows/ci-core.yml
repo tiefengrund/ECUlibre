@@ -1,5 +1,5 @@
 # File: .github/workflows/ci-core.yml
-name: CI core
+name: CI core (dev container)
 
 on:
   push:
@@ -10,6 +10,14 @@ on:
 jobs:
   core:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read        # pull from GHCR
+    container:
+      image: ghcr.io/tiefengrund/eculibre/dev:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -17,6 +25,11 @@ jobs:
         run: |
           chmod +x ./eculibre.sh || true
           ./eculibre.sh init
+
+      - name: Lint scripts
+        run: |
+          find scripts -type f -maxdepth 1 -perm -111 -print0 2>/dev/null | xargs -0 -r shellcheck || true
+          test -x ./eculibre.sh && shellcheck ./eculibre.sh || true
 
       - name: Structure check (strict)
         run: ./eculibre.sh check --strict
