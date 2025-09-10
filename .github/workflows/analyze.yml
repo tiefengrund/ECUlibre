@@ -26,6 +26,7 @@ jobs:
         run: |
           OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
           echo "image=ghcr.io/${OWNER_LC}/eculibre/dev:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "owner_lc=${OWNER_LC}" >> "$GITHUB_OUTPUT"
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -34,13 +35,70 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 👉 Use Buildx with docker-container driver so GHA cache works
-      - name: Set up Buildx
+      - name: Set up Buildx (docker-container driver)
         uses: docker/setup-buildx-action@v3
         with:
           install: true
           driver: docker-container
           driver-opts: image=moby/buildkit:latest
+
+      # --- fix: create docker context on-the-fly if ./docker is missing ---
+      - name: Ensure docker context exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docker
+          if [[ ! -f docker/Dockerfile ]]; then
+            cat > docker/Dockerfile <<'DOCKERFILE'
+FROM debian:bookworm-slim
+
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bash ca-certificates curl git make coreutils findutils grep sed gawk \
+      python3 python3-pip python3-venv \
+      jq yq zip unzip \
+      binutils srecord \
+      shellcheck \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir pyyaml jsonschema
+
+ARG USERNAME=dev
+ARG USER_UID=1000
+ARG USER_GID=1000
+RUN groupadd --gid ${USER_GID} ${USERNAME} \
+ && useradd  --uid ${USER_UID} --gid ${USER_GID} -m ${USERNAME}
+
+WORKDIR /workspace
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+USER ${USERNAME}
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["bash"]
+DOCKERFILE
+          fi
+
+          if [[ ! -f docker/entrypoint.sh ]]; then
+            cat > docker/entrypoint.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+# If first arg looks like an option, run bash
+if [[ "${1:-}" == -* ]]; then exec bash "$@"; fi
+# Convenience: eculibre => run repo script if present
+if [[ "${1:-}" == "eculibre" && -x "/workspace/eculibre.sh" ]]; then
+  shift
+  exec /workspace/eculibre.sh "$@"
+fi
+exec "$@"
+SH
+            chmod +x docker/entrypoint.sh
+          fi
 
       - name: Build & Push dev image
         uses: docker/build-push-action@v6
@@ -50,7 +108,7 @@ jobs:
           push: true
           tags: |
             ${{ steps.meta.outputs.image }}
-            ghcr.io/${{ github.repository_owner }}/eculibre/dev:latest
+            ghcr.io/${{ steps.meta.outputs.owner_lc }}/eculibre/dev:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
