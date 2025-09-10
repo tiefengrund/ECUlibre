@@ -1,0 +1,193 @@
+name: DeepSeek E2E (HEX roundtrip)
+
+on:
+  workflow_dispatch:
+    inputs:
+      timeout_minutes:
+        description: "Max wait for DeepSeek jobs"
+        required: false
+        default: "40"
+
+permissions:
+  contents: read
+  checks: write    # to create/update a Check Run
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    env:
+      DS_BASE: ${{ secrets.DEEPSEEK_API_BASE }}
+      DS_KEY:  ${{ secrets.DEEPSEEK_API_KEY }}
+      DS_DASH: ${{ secrets.DEEPSEEK_DASHBOARD_URL_BASE }}
+      TIMEOUT_MIN: ${{ inputs.timeout_minutes }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install intelhex pyyaml jsonschema
+
+      - name: Export BIN → HEX (DeepSeek input)
+        run: |
+          set -euo pipefail
+          python scripts/export_bins_to_hex.py
+          echo "### Exported HEX inputs" >> "$GITHUB_STEP_SUMMARY"
+          find dist/deepseek/incoming -name '*.hex' -printf '* %P\n' | sort >> "$GITHUB_STEP_SUMMARY" || echo "* none" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create a GitHub Check for DeepSeek
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const res = await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: "DeepSeek processing",
+              head_sha: context.sha,
+              status: "in_progress"
+            });
+            core.setOutput("check_id", res.data.id);
+
+      - name: Submit jobs to DeepSeek
+        id: submit
+        run: |
+          set -euo pipefail
+          test -n "${DS_BASE:-}" && test -n "${DS_KEY:-}" || { echo "No DeepSeek API base/key configured"; exit 1; }
+          mkdir -p dist/deepseek/jobs
+          : > dist/deepseek/jobs/jobs.jsonl
+          : > dist/deepseek/jobs/job_ids.txt
+
+          # Replace the two endpoints below with your real ones from DeepSeek docs:
+          CREATE_URL="${DS_BASE%/}/v1/jobs"       # placeholder
+          UPLOAD_URL="${DS_BASE%/}/v1/jobs/%s/files"  # placeholder (format with job_id)
+          DASH_BASE="${DS_DASH:-}"
+
+          shopt -s nullglob
+          for f in dist/deepseek/incoming/**/*.hex dist/deepseek/incoming/*.hex; do
+            [ -f "$f" ] || continue
+            echo "Submitting $f"
+            # 1) create a job
+            JOB_JSON="$(curl -fsS -X POST "$CREATE_URL" \
+              -H "Authorization: Bearer $DS_KEY" \
+              -H "Content-Type: application/json" \
+              -d "{\"task\":\"ecu_hex_process\",\"notes\":\"ECUlibre CI\",\"metadata\":{\"source\":\"github\",\"path\":\"${f#dist/}\"}}" )"
+
+            JOB_ID="$(printf '%s' "$JOB_JSON" | jq -r '.job_id // .id')"
+            test "$JOB_ID" != "null" && test -n "$JOB_ID" || { echo "No job_id in response"; echo "$JOB_JSON"; exit 1; }
+
+            printf '%s\n' "$JOB_JSON" >> dist/deepseek/jobs/jobs.jsonl
+            echo "$JOB_ID" >> dist/deepseek/jobs/job_ids.txt
+
+            # 2) upload the HEX file (multipart)
+            UURL=$(printf "$UPLOAD_URL" "$JOB_ID")
+            curl -fsS -X POST "$UURL" \
+              -H "Authorization: Bearer $DS_KEY" \
+              -F "file=@$f" \
+              -F "type=hex" >/dev/null
+
+            # Optional: add dashboard link to step summary
+            if [ -n "$DASH_BASE" ]; then
+              echo "* [$JOB_ID]($DASH_BASE/$JOB_ID)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "* $JOB_ID" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+          if [ ! -s dist/deepseek/jobs/job_ids.txt ]; then
+            echo "No HEX files found to submit."
+            exit 0
+          fi
+
+      - name: Poll DeepSeek until complete
+        if: always()
+        id: poll
+        run: |
+          set -euo pipefail
+          if [ ! -s dist/deepseek/jobs/job_ids.txt ]; then
+            echo "no_jobs=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          STATUS_URL="${DS_BASE%/}/v1/jobs/%s"           # placeholder
+          RESULT_URL="${DS_BASE%/}/v1/jobs/%s/result"    # placeholder
+
+          mkdir -p dist/deepseek/output
+          deadline=$(( $(date +%s) + ${TIMEOUT_MIN:-40}*60 ))
+          pending=( $(cat dist/deepseek/jobs/job_ids.txt) )
+
+          while [ ${#pending[@]} -gt 0 ]; do
+            now=$(date +%s)
+            [ $now -lt $deadline ] || { echo "Timeout waiting for DeepSeek jobs"; break; }
+
+            new_pending=()
+            for id in "${pending[@]}"; do
+              SURL=$(printf "$STATUS_URL" "$id")
+              js="$(curl -fsS -H "Authorization: Bearer $DS_KEY" "$SURL" || true)"
+              st="$(printf '%s' "$js" | jq -r '.status // "unknown"')"
+              echo "job $id -> $st"
+
+              case "$st" in
+                completed|succeeded|success)
+                  RURL=$(printf "$RESULT_URL" "$id")
+                  # Expect a HEX file in body; adapt if JSON wrapper is used
+                  curl -fsS -H "Authorization: Bearer $DS_KEY" "$RURL" -o "dist/deepseek/output/${id}.hex"
+                  ;;
+                failed|error)
+                  echo "Job $id failed"
+                  ;;
+                *)
+                  new_pending+=("$id")
+                  ;;
+              esac
+            done
+
+            pending=("${new_pending[@]}")
+            [ ${#pending[@]} -gt 0 ] && sleep 15
+          done
+
+          # Summarize
+          echo "### DeepSeek results" >> "$GITHUB_STEP_SUMMARY"
+          if compgen -G "dist/deepseek/output/*.hex" > /dev/null; then
+            for x in dist/deepseek/output/*.hex; do echo "* $(basename "$x")" >> "$GITHUB_STEP_SUMMARY"; done
+          else
+            echo "* none" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Mark Check Run status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const check_id = Number(core.getInput('check_id', {required:false}) || '${{ steps.check.outputs.check_id }}');
+            if (!check_id) { return; }
+            const anyResults = await exec.getExecOutput('bash', ['-lc', 'compgen -G "dist/deepseek/output/*.hex" >/dev/null && echo yes || echo no']);
+            const conclusion = anyResults.stdout.trim()==='yes' ? 'success' : 'failure';
+            await github.rest.checks.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              check_run_id: check_id,
+              status: 'completed',
+              conclusion
+            });
+
+      - name: Import HEX → BIN + Windows ZIPs
+        if: always()
+        run: |
+          set -euo pipefail
+          python scripts/import_hex_to_bins.py
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepseek-roundtrip
+          path: |
+            dist/deepseek/incoming/**/*
+            dist/deepseek/output/*.hex
+            dist/windows/*.zip
+            dist/windows/manifest-windows.csv
