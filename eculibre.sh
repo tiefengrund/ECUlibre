@@ -1,0 +1,419 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# =============================================================================
+# ECUlibre all-in-one helper
+#   subcommands:
+#     init                 → bootstrap repo (structure, docs, logos)
+#     check [--strict]     → validate structure against manifest
+#     convert BIN HEX [--base-addr 0x0] [--rec-len 16]
+# Notes:
+#   - Generation directories are slugified (Windows-safe), e.g. "8V / MQB" → "8v-mqb"
+#   - Human-readable generation is kept in metadata.yml & docs tables
+# =============================================================================
+
+ROOT="${ECULIBRE_ROOT:-.}"
+
+# ---------- helpers ----------
+mk()        { mkdir -p "$@"; }
+writenew()  { [[ -f "$1" ]] || printf "%s\n" "${2:-}" > "$1"; }
+append()    { printf "%s\n" "${2:-}" >> "$1"; }
+slug() {
+  # lower-case; replace spaces . ( ) / , + with '-' ; drop non [a-z0-9_-] ; collapse dashes ; trim
+  tr "[:upper:]" "[:lower:]" <<<"$1" \
+  | sed -E "s/[ .(),+\/]+/-/g" \
+  | sed -E "s/[^a-z0-9_-]//g"  \
+  | sed -E "s/-{2,}/-/g"       \
+  | sed -E "s/^-+|-+$//g"
+}
+
+# ---------- vehicle manifest (Brand|Model|Generation(s);…|Aliases|Notes) ----------
+VEHICLES="$(cat <<'EOFM'
+Audi|A3|8V / MQB|Typ8V,MQB|
+Audi|A4|B9 (Typ 8W)|B9|
+Audi|A6|C5 (Typ 4B); C6 (4F); C7 (4G); C8 (4K)|4B,4F,4G,4K|Generationen & Typcodes
+Audi|A7|C8|C8|
+Audi|Q5|FY (MLB evo)|FY,MLB-evo|
+Audi|Q7|4M (MLB evo)|4M,MLB-evo|
+BMW|1er|F20/F21|F20,F21|
+BMW|3er|G20|G20|
+BMW|5er|G30/G31|G30,G31|
+BMW|X3|G01|G01|
+Mercedes|C-Klasse|W205; W206|W205,W206|
+Mercedes|E-Klasse|W213|W213|
+Mercedes|GLC|X253|X253|
+Volkswagen|Golf|Mk7 / MQB|Mk7,MQB|
+Volkswagen|Passat|B8 (MQB)|B8,MQB|
+Volkswagen|Tiguan|AD / MQB|AD,MQB|
+Skoda|Octavia|Mk4 (NX, MQB)|NX,Mk4,MQB|
+Seat|Leon|Mk4 (KL, MQB)|KL,Mk4,MQB|
+Opel|Astra|K|AstraK|
+Opel|Insignia|B|InsigniaB|
+Ford|Focus|Mk4 (C2)|Mk4,C2|
+Ford|Mondeo|Mk5 (CD4)|Mk5,CD4|
+Renault|Clio|V (CMF-B)|ClioV,CMF-B|
+Renault|Megane|IV (CMF-C/D)|MeganeIV,CMF-CD|
+Peugeot|308|T9|T9|
+Citroen|C4|B7|B7|
+Fiat|500|312|312|
+Toyota|Corolla|E210 (TNGA-C)|E210,TNGA|
+Honda|Civic|FK7/FK8 (10th Gen)|FK7,FK8|
+Mazda|3|BP|BP|
+Nissan|Qashqai|J11|J11|
+Hyundai|i30|PD|PD|
+Kia|Ceed|CD|CD|
+Volvo|XC60|SPA|SPA|
+Tesla|Model 3|Highland (2023–)|Highland,Model3|
+Subaru|Forester|SK|SK|
+Mitsubishi|Outlander|GF/GM; GN|GF,GM,GN|
+Alfa Romeo|Giulia|952 (Giorgio)|952,Giorgio|
+Dacia|Duster|J11/J12|J11,J12|
+EOFM
+)"
+
+# ---------- defaults ----------
+DEFAULT_ECUVENDOR="Bosch"
+DEFAULT_ECUMODEL="MD1"
+DEFAULT_FW="FW0001"
+DEFAULT_REGION="EU"
+
+# ---------- logo assets ----------
+write_logo_assets() {
+  mk "$ROOT/logo"
+  # Light
+  cat > "$ROOT/logo/ECUlibre-logo-light.svg" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 256">
+  <defs><style>.navy{fill:#0B1B2B}.gold{fill:#FFCC00}.white{fill:#FFFFFF}.slate{fill:#163A59}</style></defs>
+  <rect width="512" height="256" fill="none"/>
+  <g><circle cx="200" cy="75" r="6" class="gold"/><circle cx="248" cy="83" r="6" class="gold"/><circle cx="289" cy="109" r="6" class="gold"/><circle cx="309" cy="149" r="6" class="gold"/><circle cx="304" cy="193" r="6" class="gold"/><circle cx="276" cy="229" r="6" class="gold"/><circle cx="235" cy="245" r="6" class="gold"/><circle cx="190" cy="242" r="6" class="gold"/><circle cx="153" cy="222" r="6" class="gold"/><circle cx="128" cy="187" r="6" class="gold"/><circle cx="121" cy="144" r="6" class="gold"/><circle cx="136" cy="103" r="6" class="gold"/></g>
+  <g><rect x="90" y="140" rx="18" ry="18" width="220" height="80" class="navy"/><path d="M120,140 L160,110 H240 L280,140 Z" class="navy"/><circle cx="140" cy="225" r="18" class="navy"/><circle cx="260" cy="225" r="18" class="navy"/><rect x="92" y="170" width="20" height="10" rx="3" class="slate"/><rect x="288" y="170" width="20" height="10" rx="3" class="slate"/><rect x="185" y="165" width="30" height="30" rx="4" class="slate"/><rect x="178" y="172" width="5" height="16" class="slate"/><rect x="171" y="172" width="5" height="16" class="slate"/><rect x="217" y="172" width="5" height="16" class="slate"/><rect x="224" y="172" width="5" height="16" class="slate"/><rect x="192" y="157" width="16" height="5" class="slate"/><rect x="192" y="150" width="16" height="5" class="slate"/><rect x="192" y="201" width="16" height="5" class="slate"/><rect x="192" y="208" width="16" height="5" class="slate"/></g>
+  <g><rect x="340" y="165" width="110" height="44" rx="22" class="navy"/><circle cx="428" cy="187" r="18" class="white"/><rect x="423" y="185" width="10" height="4" rx="2" class="navy"/></g>
+  <text x="40" y="70" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="40" font-weight="700" class="navy">ECUlibre</text>
+</svg>
+SVG
+  # Dark
+  cat > "$ROOT/logo/ECUlibre-logo-dark.svg" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 256">
+  <rect width="512" height="256" fill="#0B1B2B"/>
+  <g><circle cx="200" cy="75" r="6" fill="#FFCC00"/><circle cx="248" cy="83" r="6" fill="#FFCC00"/><circle cx="289" cy="109" r="6" fill="#FFCC00"/><circle cx="309" cy="149" r="6" fill="#FFCC00"/><circle cx="304" cy="193" r="6" fill="#FFCC00"/><circle cx="276" cy="229" r="6" fill="#FFCC00"/><circle cx="235" cy="245" r="6" fill="#FFCC00"/><circle cx="190" cy="242" r="6" fill="#FFCC00"/><circle cx="153" cy="222" r="6" fill="#FFCC00"/><circle cx="128" cy="187" r="6" fill="#FFCC00"/><circle cx="121" cy="144" r="6" fill="#FFCC00"/><circle cx="136" cy="103" r="6" fill="#FFCC00"/></g>
+  <g><rect x="90" y="140" rx="18" ry="18" width="220" height="80" fill="#163A59"/><path d="M120,140 L160,110 H240 L280,140 Z" fill="#163A59"/><circle cx="140" cy="225" r="18" fill="#163A59"/><circle cx="260" cy="225" r="18" fill="#163A59"/><rect x="92" y="170" width="20" height="10" rx="3" fill="#FFFFFF"/><rect x="288" y="170" width="20" height="10" rx="3" fill="#FFFFFF"/><rect x="185" y="165" width="30" height="30" rx="4" fill="#FFFFFF"/><rect x="178" y="172" width="5" height="16" fill="#FFFFFF"/><rect x="171" y="172" width="5" height="16" fill="#FFFFFF"/><rect x="217" y="172" width="5" height="16" fill="#FFFFFF"/><rect x="224" y="172" width="5" height="16" fill="#FFFFFF"/><rect x="192" y="157" width="16" height="5" fill="#FFFFFF"/><rect x="192" y="150" width="16" height="5" fill="#FFFFFF"/><rect x="192" y="201" width="16" height="5" fill="#FFFFFF"/><rect x="192" y="208" width="16" height="5" fill="#FFFFFF"/></g>
+  <g><rect x="340" y="165" width="110" height="44" rx="22" fill="#FFFFFF"/><circle cx="428" cy="187" r="18" fill="#163A59"/><rect x="423" y="185" width="10" height="4" rx="2" fill="#FFFFFF"/></g>
+  <text x="40" y="70" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="40" font-weight="700" fill="#E6EDF3">ECUlibre</text>
+</svg>
+SVG
+  # Icon
+  cat > "$ROOT/logo/ECUlibre-icon.svg" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <rect width="256" height="256" fill="none"/>
+  <g><circle cx="128" cy="58" r="6" fill="#FFCC00"/><circle cx="161" cy="64" r="6" fill="#FFCC00"/><circle cx="188" cy="84" r="6" fill="#FFCC00"/><circle cx="201" cy="114" r="6" fill="#FFCC00"/><circle cx="197" cy="147" r="6" fill="#FFCC00"/><circle cx="177" cy="174" r="6" fill="#FFCC00"/><circle cx="148" cy="189" r="6" fill="#FFCC00"/><circle cx="116" cy="187" r="6" fill="#FFCC00"/><circle cx="90" cy="171" r="6" fill="#FFCC00"/><circle cx="73" cy="144" r="6" fill="#FFCC00"/><circle cx="69" cy="111" r="6" fill="#FFCC00"/><circle cx="80" cy="82" r="6" fill="#FFCC00"/></g>
+  <g><rect x="56" y="120" rx="12" ry="12" width="120" height="50" fill="#0B1B2B"/><path d="M76,120 L96,100 H144 L164,120 Z" fill="#0B1B2B"/><circle cx="84" cy="175" r="12" fill="#0B1B2B"/><circle cx="148" cy="175" r="12" fill="#0B1B2B"/><rect x="60" y="138" width="14" height="8" rx="2" fill="#163A59"/><rect x="162" y="138" width="14" height="8" rx="2" fill="#163A59"/><rect x="108" y="136" width="20" height="20" rx="3" fill="#163A59"/></g>
+  <g><rect x="178" y="132" width="58" height="24" rx="12" fill="#0B1B2B"/><circle cx="214" cy="144" r="9" fill="#FFFFFF"/><rect x="210.5" y="142.5" width="7" height="3" rx="1.5" fill="#0B1B2B"/></g>
+</svg>
+SVG
+}
+
+ensure_readme_logo_block() {
+  local readme="$ROOT/README.md"
+  local block='<p align="right">
+  <img src="logo/ECUlibre-logo-light.svg" alt="ECUlibre" width="200">
+</p>
+'
+  if [[ -f "$readme" ]]; then
+    if ! grep -q 'logo/ECUlibre-logo-light.svg' "$readme"; then
+      tmp="$(mktemp)"; printf "%s\n" "$block" > "$tmp"; cat "$readme" >> "$tmp"; mv "$tmp" "$readme"
+    fi
+  else
+    printf "%s\n" "$block# ECUlibre\n\n(README content TBD)" > "$readme"
+  fi
+}
+
+# ---------- bootstrap (init) ----------
+cmd_init() {
+  mk "$ROOT"/{docs,schemas,rawdata,workbench,patches,releases,tools,ci,scripts,logo,docs/brands}
+  writenew "$ROOT/VERSION" "0.1.0"
+  writenew "$ROOT/CHANGELOG.md" "# Changelog
+
+All notable changes to this project will be documented here.
+"
+  writenew "$ROOT/schemas/metadata.schema.yaml" "\
+\$schema: \"https://json-schema.org/draft/2020-12/schema\"
+type: object
+required: [schema_version, brand, model, generation, ecu_vendor, ecu_model, firmware, region, hashes]
+properties:
+  schema_version: { type: string }
+  brand: { type: string }
+  model: { type: string }
+  generation: { type: string }
+  ecu_vendor: { type: string }
+  ecu_model: { type: string }
+  firmware: { type: string }
+  region: { type: string }
+  notes: { type: string }
+  hashes:
+    type: object
+    properties:
+      raw_sha256: { type: string }
+      size_bytes: { type: integer }
+"
+  writenew "$ROOT/VERSIONS.md" "\
+# ECUlibre – Versioning Concept
+
+## English
+### Project (Tools/Repo)
+- SemVer \`MAJOR.MINOR.PATCH\` (e.g. \`0.1.0\`), tags \`vX.Y.Z\`, changelog via *Keep a Changelog*.
+### Schema (Metadata)
+- \`schema_version\` in each dataset, tags \`schema-vX.Y\`.
+### Dataset (ECU Raw Packages)
+- Validated raw + metadata + checksums; named \`releases/datasets/.../dataset-vA.B.C.zip\`.
+### Patch-Packs (Feature Mods)
+- Rules + scripts + tests; named \`releases/patchpacks/.../<feature>-vA.B.C.zip\`.
+### Compatibility
+- Map patch-pack ↔ dataset in \`docs/compatibility.md\`.
+### Branching
+- Trunk-based: \`main\` releasable; feature branches → PR → tag releases.
+
+## Deutsch
+### Projekt (Tools/Repo)
+- SemVer \`MAJOR.MINOR.PATCH\` (z. B. \`0.1.0\`), Tags \`vX.Y.Z\`, Changelog nach *Keep a Changelog*.
+### Schema (Metadaten)
+- \`schema_version\` in jedem Datensatz, Schema-Tags \`schema-vX.Y\`.
+### Datensatz (ECU-Rohpakete)
+- Validierte Rohdaten + Metadaten + Prüfsummen; Name \`releases/datasets/.../dataset-vA.B.C.zip\`.
+### Patch-Packs (Feature)
+- Regeln + Skripte + Tests; Name \`releases/patchpacks/.../<feature>-vA.B.C.zip\`.
+### Kompatibilität
+- Zuordnung Patch-Pack ↔ Dataset in \`docs/compatibility.md\`.
+### Branching
+- Trunk-based: \`main\` releasbar; Feature-Branches → PR → Tags.
+"
+  writenew "$ROOT/README.md" "# ECUlibre
+
+## English (short)
+Open-source workspace for **ECU research** on EU-mandated functions.
+**Disclaimer:** Educational & research only.
+
+- Start: \`docs/vehicle-index.md\`
+- Versioning: \`VERSIONS.md\`
+- Brand pages: \`docs/brands/\`
+- Patches (examples): \`patches/common\`
+
+## Deutsch (kurz)
+Open-Source-Arbeitsbereich für **ECU-Forschung** zu EU-Funktionen.
+**Hinweis:** Nur Forschung/Lernen.
+
+- Einstieg: \`docs/vehicle-index.md\`
+- Versionierung: \`VERSIONS.md\`
+- Marken-Seiten: \`docs/brands/\`
+- Patches (Beispiele): \`patches/common\`
+"
+  writenew "$ROOT/docs/vehicle-index.md" "# Vehicle Index / Fahrzeug-Index
+
+| Brand | Model | Generation/Platform | Aliases | Path |
+|------:|:----- |:--------------------|:------- |:---- |
+"
+  writenew "$ROOT/docs/vehicle-manifest.csv" "brand,model,generation_or_platform,aliases,notes"
+
+  # example patch
+  mk "$ROOT/patches/common/lane_assist_disable/tests"
+  writenew "$ROOT/patches/common/lane_assist_disable/README.md" "# Lane Assist Disable (common rules)
+Intent: disable lane keeping assist in compliant ECUs (for research/education).
+"
+  writenew "$ROOT/patches/common/lane_assist_disable/rules.yml" "\
+patch_name: lane_assist_disable
+semver: 0.1.0
+description: Disable lane keeping assist (LKAS/LKA).
+requires:
+  schema: \">=1.0 <2.0\"
+  ecu_vendor: \"*\"
+  ecu_model: \"*\"
+  firmware: \"*\"
+rules:
+  - match: { feature: 'lane_assist' }
+    action: disable
+tests: []
+"
+
+  # generate structure & docs from manifest (Windows-safe dirs via genslug)
+  while IFS="|" read -r BRAND MODEL GENPLAT ALIASES NOTES; do
+    [[ -z "${BRAND// }" ]] && continue
+    bslug="$(slug "$BRAND")"
+    BRAND_DOC_DIR="$ROOT/docs/brands/$bslug"
+    BRAND_MD="$BRAND_DOC_DIR/README.md"
+    if [[ ! -f "$BRAND_MD" ]]; then
+      mk "$BRAND_DOC_DIR"
+      printf "# %s\n\n| Model | Generation/Platform | Aliases | Path |\n|:----- |:--------------------|:------- |:---- |\n" "$BRAND" > "$BRAND_MD"
+    fi
+    mk "$ROOT/rawdata/$BRAND/$MODEL" "$ROOT/workbench/$BRAND/$MODEL"
+    IFS=";" read -r -a GENLIST <<< "$GENPLAT"
+    [[ ${#GENLIST[@]} -eq 0 ]] && GENLIST=("GEN")
+    for GEN in "${GENLIST[@]}"; do
+      gen_trim="$(echo "$GEN" | sed -E "s/^ *| *$//g")"
+      genslug="$(slug "$gen_trim")"
+      ECU_DIR="$DEFAULT_ECUVENDOR-$DEFAULT_ECUMODEL"
+      FW_DIR="$DEFAULT_FW-$DEFAULT_REGION"
+      mk "$ROOT/rawdata/$BRAND/$MODEL/$genslug/$ECU_DIR/$FW_DIR"/{incoming,validated}
+      mk "$ROOT/workbench/$BRAND/$MODEL/$genslug/$ECU_DIR/$FW_DIR"/{10_analysis,20_decode,30_mods,40_build,50_tests,90_package}
+      METAPATH="$ROOT/rawdata/$BRAND/$MODEL/$genslug/$ECU_DIR/$FW_DIR/metadata.yml"
+      writenew "$METAPATH" "\
+schema_version: \"1.0\"
+brand: \"$BRAND\"
+model: \"$MODEL\"
+generation: \"$gen_trim\"
+ecu_vendor: \"$DEFAULT_ECUVENDOR\"
+ecu_model: \"$DEFAULT_ECUMODEL\"
+firmware: \"$DEFAULT_FW\"
+region: \"$DEFAULT_REGION\"
+hashes:
+  raw_sha256: \"\"
+  size_bytes: 0
+notes: \"\"
+"
+      RELPATH="rawdata/${BRAND}/${MODEL}/${genslug}"
+      ROW="| ${BRAND} | ${MODEL} | ${gen_trim} | ${ALIASES:-} | \`${RELPATH}\` |"
+      grep -Fqx "$ROW" "$ROOT/docs/vehicle-index.md" 2>/dev/null || append "$ROOT/docs/vehicle-index.md" "$ROW"
+      BROW="| ${MODEL} | ${gen_trim} | ${ALIASES:-} | \`${RELPATH}\` |"
+      grep -Fqx "$BROW" "$BRAND_MD" 2>/dev/null || append "$BRAND_MD" "$BROW"
+    done
+    CSVLINE="\"$BRAND\",\"$MODEL\",\"$GENPLAT\",\"$ALIASES\",\"${NOTES:-}\""
+    grep -Fqx "$CSVLINE" "$ROOT/docs/vehicle-manifest.csv" 2>/dev/null || append "$ROOT/docs/vehicle-manifest.csv" "$CSVLINE"
+  done <<< "$VEHICLES"
+
+  # logos + README block
+  write_logo_assets
+  ensure_readme_logo_block
+
+  # extra docs
+  writenew "$ROOT/CONTRIBUTING.md" "# Contributing
+
+- Add vehicles via \`docs/vehicle-manifest.csv\` (Brand|Model|Generation/Platform|Aliases|Notes).
+- Re-run this script: \`./eculibre.sh init\` (idempotent).
+- Validate metadata against \`schemas/metadata.schema.yaml\`.
+"
+  writenew "$ROOT/docs/compatibility.md" "# Compatibility Matrix
+
+> Map patch-pack versions to dataset tags here.
+"
+
+  echo "✅ init complete → $ROOT"
+}
+
+# ---------- repo check ----------
+cmd_check() {
+  local STRICT="${1:-}"
+  local MANIFEST="$ROOT/docs/vehicle-manifest.csv"
+  [[ -f "$MANIFEST" ]] || { echo "❌ Manifest not found: $MANIFEST"; exit 2; }
+  local missing=0 warn=0
+  tail -n +2 "$MANIFEST" | while IFS=',' read -r BRAND MODEL GENPLAT ALIASES NOTES; do
+    BRAND="${BRAND//\"/}"; MODEL="${MODEL//\"/}"; GENPLAT="${GENPLAT//\"/}"
+    IFS=';' read -r -a GENLIST <<< "$GENPLAT"; [[ ${#GENLIST[@]} -eq 0 ]] && GENLIST=("GEN")
+    for GEN in "${GENLIST[@]}"; do
+      gen_trim="$(echo "$GEN" | sed -E 's/^ *| *$//g')"
+      genslug="$(slug "$gen_trim")"
+      BASE="$ROOT/rawdata/$BRAND/$MODEL/$genslug"
+      if [[ ! -d "$BASE" ]]; then echo "❗ Missing base path: $BASE"; missing=$((missing+1)); continue; fi
+      ECU=$(ls "$BASE" 2>/dev/null | head -n1 || true)
+      if [[ -z "${ECU:-}" ]]; then echo "❗ Missing ECU folder under: $BASE"; missing=$((missing+1)); continue; fi
+      FWBASE="$BASE/$ECU"; FW=$(ls "$FWBASE" 2>/dev/null | head -n1 || true)
+      if [[ -z "${FW:-}" ]]; then echo "❗ Missing FW folder under: $FWBASE"; missing=$((missing+1)); continue; fi
+      PATHBASE="$FWBASE/$FW"
+      [[ -d "$PATHBASE/validated" ]] || { echo "❗ Missing validated/: $PATHBASE"; missing=$((missing+1)); continue; }
+      [[ -f "$PATHBASE/metadata.yml" ]] || { echo "❗ Missing metadata.yml: $PATHBASE"; warn=$((warn+1)); continue; }
+      echo "✔ OK: $BRAND / $MODEL / $gen_trim"
+    done
+  done
+  echo "----"; echo "Summary: missing=$missing, warnings=$warn"
+  if [[ "$STRICT" == "--strict" && $missing -gt 0 ]]; then echo "❌ Strict mode: failing (missing=$missing)"; exit 1; fi
+  echo "✅ check complete"
+}
+
+# ---------- BIN → HEX conversion ----------
+# Uses srec_cat or objcopy if present; otherwise Python fallback (Intel HEX, type 04 for upper addresses).
+cmd_convert() {
+  if [[ $# -lt 2 ]]; then
+    echo "usage: $0 convert INPUT.bin OUTPUT.hex [--base-addr 0x0] [--rec-len 16]"
+    exit 2
+  fi
+  local IN="$1"; shift
+  local OUT="$1"; shift
+  local BASE=0x0
+  local RECLEN=16
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --base-addr) BASE="$2"; shift 2;;
+      --rec-len)   RECLEN="$2"; shift 2;;
+      *) echo "unknown option: $1"; exit 2;;
+    esac
+  done
+  [[ -f "$IN" ]] || { echo "❌ input not found: $IN"; exit 1; }
+  # prefer srec_cat
+  if command -v srec_cat >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    srec_cat "$IN" -binary -offset "$((BASE))" -o "$OUT" -intel -obs="$RECLEN"
+    echo "✅ wrote $OUT (srec_cat)"; return 0
+  fi
+  # fallback: objcopy
+  if command -v objcopy >/dev/null 2>&1; then
+    objcopy -I binary -O ihex --change-addresses "$((BASE))" "$IN" "$OUT"
+    echo "✅ wrote $OUT (objcopy)"; return 0
+  fi
+  # final fallback: embedded Python (Intel HEX w/ extended linear addr)
+  python3 - "$IN" "$OUT" "$BASE" "$RECLEN" <<'PY'
+import sys, pathlib
+inp, outp, base_s, reclen_s = sys.argv[1:5]
+base = int(base_s, 0)
+reclen = int(reclen_s)
+data = pathlib.Path(inp).read_bytes()
+def rec(ll, addr, rtype, payload):
+    s = bytearray([ll, (addr>>8)&0xFF, addr&0xFF, rtype]) + bytearray(payload)
+    chk = ((~sum(s) + 1) & 0xFF)
+    return ":" + "".join(f"{b:02X}" for b in s + bytes([chk]))
+lines = []
+upper = None
+offset = 0
+while offset < len(data):
+    addr_full = base + offset
+    up = (addr_full >> 16) & 0xFFFF
+    if up != upper:
+        lines.append(rec(2, 0x0000, 0x04, [ (up>>8)&0xFF, up&0xFF ]))
+        upper = up
+    addr16 = addr_full & 0xFFFF
+    chunk = data[offset:offset+reclen]
+    lines.append(rec(len(chunk), addr16, 0x00, chunk))
+    offset += len(chunk)
+lines.append(rec(0, 0, 0x01, b""))
+pathlib.Path(outp).write_text("\n".join(lines) + "\n")
+print(f"✅ wrote {outp} (python fallback)")
+PY
+}
+
+# ---------- usage ----------
+usage() {
+  cat <<USG
+ECUlibre helper
+
+  $0 init
+      Bootstrap repo structure, docs, logos (idempotent).
+
+  $0 check [--strict]
+      Validate structure against docs/vehicle-manifest.csv (Windows-safe slug paths).
+
+  $0 convert INPUT.bin OUTPUT.hex [--base-addr 0x0] [--rec-len 16]
+      Convert raw binary to Intel HEX.
+      Prefers 'srec_cat', then 'objcopy'; falls back to embedded Python.
+
+Examples:
+  $0 init
+  $0 check --strict
+  $0 convert dump.bin dump.hex --base-addr 0x8000 --rec-len 32
+USG
+}
+
+# ---------- main ----------
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  init)    cmd_init "$@";;
+  check)   cmd_check "$@";;
+  convert) cmd_convert "$@";;
+  ""|-h|--help|help) usage;;
+  *) echo "unknown command: $cmd"; usage; exit 2;;
+esac
