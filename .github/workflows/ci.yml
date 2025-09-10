@@ -283,3 +283,21 @@ jobs:
         with:
           name: ci-artifacts-windows
           path: out
+      - name: Install intelhex (pip)
+        run: |
+          python -m pip install --upgrade pip
+          pip install intelhex
+
+      - name: Export BIN → Intel-HEX for DeepSeek
+        run: |
+          set -euo pipefail
+          python scripts/export_bins_to_hex.py
+
+      - name: Upload DeepSeek input HEX
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepseek-input-hex
+          path: |
+            dist/deepseek/incoming/**/*.hex
+            dist/deepseek/incoming/**/*.json
+            dist/deepseek/incoming/manifest-hex.csv
