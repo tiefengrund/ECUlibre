@@ -1,28 +1,30 @@
-name: CI (Arch)
+name: CI (openSUSE)
+
 on:
   push:
     branches: [ "main" ]
   pull_request:
   workflow_dispatch:
+
 permissions: { contents: read }
+
 jobs:
-  arch:
+  suse:
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    container: opensuse/leap:15.5
     steps:
-      - name: Install git (container)
+      - name: Install git
         run: |
-          pacman -Sy --noconfirm archlinux-keyring || true
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm git
+          zypper -n ref
+          zypper -n in -y git
       - uses: actions/checkout@v4
-      - name: Install tools (pacman + pip)
+      - name: Install tools
         run: |
           set -euo pipefail
-          pacman -S --noconfirm shellcheck python-pip zip || true
-          pip install --upgrade pip || true
-          pip install pyyaml jsonschema intelhex || true
-      - name: Run common checks (POSIX-safe)
+          zypper -n in -y ShellCheck python3-pip zip || true
+          python3 -m pip install --upgrade pip || true
+          pip3 install pyyaml jsonschema intelhex || true
+      - name: Run common checks
         run: bash scripts/ci_basic.sh || true
       - uses: actions/upload-artifact@v4
-        with: { name: ci-artifacts-arch, path: out }
+        with: { name: ci-artifacts-suse, path: out }
