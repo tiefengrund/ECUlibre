@@ -3,27 +3,43 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
-      - name: Install git (container)
-        run: |
-          pacman -Sy --noconfirm archlinux-keyring || true
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm git
+    - name: Install git (container)
+      run: 'pacman -Sy --noconfirm archlinux-keyring || true
 
-      - uses: actions/checkout@v4
+        pacman -Syu --noconfirm
 
-      - name: Install tools (pacman + pip + gh)
-        run: |
-          set -euo pipefail
-          pacman -S --noconfirm shellcheck python-pip zip github-cli || true
-          pip install --upgrade pip || true
-          pip install pyyaml jsonschema intelhex || true
+        pacman -S --noconfirm git
 
-      - name: Sanity check GitHub CLI
-        env:
-          GITHUB_TOKEN: ${{ github.token }}   # gh liest das automatisch
-        run: |
-          set -euo pipefail
-          gh --version
-          # ein paar schnelle Calls:
-          gh api rate_limit | jq '.resources.core.remaining'
-          gh workflow list | head -n 20
+        '
+    - uses: actions/checkout@v4
+    - name: Install tools (pacman + pip + gh)
+      run: 'set -euo pipefail
+
+        pacman -S --noconfirm shellcheck python-pip zip github-cli || true
+
+        pip install --upgrade pip || true
+
+        pip install pyyaml jsonschema intelhex || true
+
+        '
+    - name: Sanity check GitHub CLI
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: 'set -euo pipefail
+
+        gh --version
+
+        # ein paar schnelle Calls:
+
+        gh api rate_limit | jq ''.resources.core.remaining''
+
+        gh workflow list | head -n 20
+
+        '
+'on':
+  push:
+    branches:
+    - main
+    - master
+  pull_request: null
+  workflow_dispatch: {}

@@ -1,15 +1,12 @@
 name: DeepSeek annotate (HEX)
-
-on:
+true:
   workflow_dispatch: {}
   push:
     paths:
-      - 'dist/deepseek/incoming/**/*.hex'
-      - 'dist/deepseek/incoming/*.hex'
-
+    - dist/deepseek/incoming/**/*.hex
+    - dist/deepseek/incoming/*.hex
 permissions:
   contents: read
-
 jobs:
   annotate:
     runs-on: ubuntu-latest
@@ -18,54 +15,60 @@ jobs:
       DEEPSEEK_BASE_URL: https://api.deepseek.com
       DEEPSEEK_MODEL: deepseek-reasoner
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Install deps
+      run: 'python -m pip install --upgrade pip
 
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+        pip install requests
 
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
+        '
+    - name: Submit HEX chunks to DeepSeek (JSON annotations)
+      run: 'set -euo pipefail
 
-      - name: Submit HEX chunks to DeepSeek (JSON annotations)
-        run: |
-          set -euo pipefail
-          python scripts/deepseek_submit_annotations.py
+        python scripts/deepseek_submit_annotations.py
 
-      - name: Build HTML visualization
-        run: |
-          set -euo pipefail
-          python scripts/hex_visualize_annotations.py
+        '
+    - name: Build HTML visualization
+      run: 'set -euo pipefail
 
-      - name: Summary
-        run: |
-          echo "### China-Böller Berichte" >> "$GITHUB_STEP_SUMMARY"
-          if compgen -G "reports/china-boeller/*.html" > /dev/null; then
-            for f in reports/china-boeller/*.html; do
-              echo "* $(basename "$f")" >> "$GITHUB_STEP_SUMMARY"
-            done
-          else
-            echo "* none" >> "$GITHUB_STEP_SUMMARY"
-          fi
+        python scripts/hex_visualize_annotations.py
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: china-boeller
-          path: |
-            reports/china-boeller/*.json
-            reports/china-boeller/*.html
-      - name: Evaluate DeepSeek reports
-        env:
-          MIN_SCORE: "60"
-          FAIL_ON_LOW_SCORE: "0"   # auf "1" setzen, wenn die CI bei schwachen Ergebnissen rot werden soll
-        run: |
-          python scripts/evaluate_deepseek_reports.py
+        '
+    - name: Summary
+      run: "echo \"### China-B\xF6ller Berichte\" >> \"$GITHUB_STEP_SUMMARY\"\nif\
+        \ compgen -G \"reports/china-boeller/*.html\" > /dev/null; then\n  for f in\
+        \ reports/china-boeller/*.html; do\n    echo \"* $(basename \"$f\")\" >> \"\
+        $GITHUB_STEP_SUMMARY\"\n  done\nelse\n  echo \"* none\" >> \"$GITHUB_STEP_SUMMARY\"\
+        \nfi\n"
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: china-boeller
+        path: 'reports/china-boeller/*.json
 
-      - name: Upload evaluation artifacts (China-Böller)
-        uses: actions/upload-artifact@v4
-        with:
-          name: china-boeller-eval
-          path: reports/china-boeller/*.eval.json
-          if-no-files-found: ignore
+          reports/china-boeller/*.html
+
+          '
+    - name: Evaluate DeepSeek reports
+      env:
+        MIN_SCORE: '60'
+        FAIL_ON_LOW_SCORE: '0'
+      run: 'python scripts/evaluate_deepseek_reports.py
+
+        '
+    - name: "Upload evaluation artifacts (China-B\xF6ller)"
+      uses: actions/upload-artifact@v4
+      with:
+        name: china-boeller-eval
+        path: reports/china-boeller/*.eval.json
+        if-no-files-found: ignore
+'on':
+  push:
+    branches:
+    - main
+    - master
+  pull_request: null
+  workflow_dispatch: {}

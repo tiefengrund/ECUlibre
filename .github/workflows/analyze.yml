@@ -1,18 +1,18 @@
 name: ECU Analysis
-
-on:
+true:
   push:
     paths:
-      - 'rawdata/**/*.bin'
-      - 'rawdata/*.bin'
+    - rawdata/**/*.bin
+    - rawdata/*.bin
   workflow_dispatch:
     inputs:
       pref_mode:
         description: 'sprit sparen: power (max Leistung) oder smooth (ruhig)'
         required: false
         type: choice
-        options: [power, smooth]
-
+        options:
+        - power
+        - smooth
 jobs:
   analyze:
     runs-on: ubuntu-latest
@@ -20,73 +20,53 @@ jobs:
       contents: write
       packages: read
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-
-      - name: Preference check (power/smooth)
-        id: pref
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
-          DISPATCH_MODE: ${{ github.event.inputs.pref_mode }}
-        run: bash scripts/preference_guard.sh
-
-      - name: Ensure analyzer exists (container OR repo tool)
-        id: tool
-        run: |
-          set -euo pipefail
-          if [ -x scripts/analyze_med17.py ]; then
-            echo "path=scripts/analyze_med17.py" >> "$GITHUB_OUTPUT"
-          elif [ -f /app/analyze_med17.py ]; then
-            echo "path=/app/analyze_med17.py" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning ::No analyzer found (scripts/analyze_med17.py or /app/analyze_med17.py). Skipping."
-            echo "path=" >> "$GITHUB_OUTPUT"
-          fi
-
-      # OPTIONAL: Container, falls du dein Dockerfile nutzt:
-      # container: { image: ghcr.io/tiefengrund/eculibre-analyzer:latest }
-
-      - name: Run analyzer on changed BINs
-        if: ${{ steps.pref.outputs.MODE != '' && steps.tool.outputs.path != '' }}
-        run: |
-          set -euo pipefail
-          mkdir -p med17_analysis reports
-          BEFORE=${{ github.event.before }}
-          SHA=${{ github.sha }}
-          CHANGED=$(git diff --name-only "$BEFORE" "$SHA" -- 'rawdata/**/*.bin' 'rawdata/*.bin' || true)
-          if [ -z "$CHANGED" ]; then
-            echo "No new/changed BINs."
-            exit 0
-          fi
-          for f in $CHANGED; do
-            base=$(basename "$f"); stem="${base%.*}"
-            out="med17_analysis/$stem"; mkdir -p "$out"
-            echo "Analyzing $f -> $out (mode=${{ steps.pref.outputs.MODE }})"
-            python "${{ steps.tool.outputs.path }}" "$f" --out "$out"
-            if [ -x scripts/analyze_and_report.py ]; then
-              python scripts/analyze_and_report.py --bin "$f" --analysis-dir "$out" --reports-root reports --mode "${{ steps.pref.outputs.MODE }}"
-            fi
-          done
-
-      - name: Commit reports
-        if: always()
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions"
-          git config user.email "github-actions@users.noreply.github.com"
-          if [ -d reports ]; then git add -A reports/ || true; fi
-          if [ -d prefs ]; then git add -A prefs/ || true; fi
-          if git diff --cached --quiet; then
-            echo "No report changes to commit."
-            exit 0
-          fi
-          git commit -m "[skip ci] Add analysis reports"
-          git push
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: med17_analysis
-          path: med17_analysis/
-          retention-days: 14
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Preference check (power/smooth)
+      id: pref
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        COMMIT_MSG: ${{ github.event.head_commit.message }}
+        DISPATCH_MODE: ${{ github.event.inputs.pref_mode }}
+      run: bash scripts/preference_guard.sh
+    - name: Ensure analyzer exists (container OR repo tool)
+      id: tool
+      run: "set -euo pipefail\nif [ -x scripts/analyze_med17.py ]; then\n  echo \"\
+        path=scripts/analyze_med17.py\" >> \"$GITHUB_OUTPUT\"\nelif [ -f /app/analyze_med17.py\
+        \ ]; then\n  echo \"path=/app/analyze_med17.py\" >> \"$GITHUB_OUTPUT\"\nelse\n\
+        \  echo \"::warning ::No analyzer found (scripts/analyze_med17.py or /app/analyze_med17.py).\
+        \ Skipping.\"\n  echo \"path=\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+    - name: Run analyzer on changed BINs
+      if: ${{ steps.pref.outputs.MODE != '' && steps.tool.outputs.path != '' }}
+      run: "set -euo pipefail\nmkdir -p med17_analysis reports\nBEFORE=${{ github.event.before\
+        \ }}\nSHA=${{ github.sha }}\nCHANGED=$(git diff --name-only \"$BEFORE\" \"\
+        $SHA\" -- 'rawdata/**/*.bin' 'rawdata/*.bin' || true)\nif [ -z \"$CHANGED\"\
+        \ ]; then\n  echo \"No new/changed BINs.\"\n  exit 0\nfi\nfor f in $CHANGED;\
+        \ do\n  base=$(basename \"$f\"); stem=\"${base%.*}\"\n  out=\"med17_analysis/$stem\"\
+        ; mkdir -p \"$out\"\n  echo \"Analyzing $f -> $out (mode=${{ steps.pref.outputs.MODE\
+        \ }})\"\n  python \"${{ steps.tool.outputs.path }}\" \"$f\" --out \"$out\"\
+        \n  if [ -x scripts/analyze_and_report.py ]; then\n    python scripts/analyze_and_report.py\
+        \ --bin \"$f\" --analysis-dir \"$out\" --reports-root reports --mode \"${{\
+        \ steps.pref.outputs.MODE }}\"\n  fi\ndone\n"
+    - name: Commit reports
+      if: always()
+      run: "set -euo pipefail\ngit config user.name \"github-actions\"\ngit config\
+        \ user.email \"github-actions@users.noreply.github.com\"\nif [ -d reports\
+        \ ]; then git add -A reports/ || true; fi\nif [ -d prefs ]; then git add -A\
+        \ prefs/ || true; fi\nif git diff --cached --quiet; then\n  echo \"No report\
+        \ changes to commit.\"\n  exit 0\nfi\ngit commit -m \"[skip ci] Add analysis\
+        \ reports\"\ngit push\n"
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: med17_analysis
+        path: med17_analysis/
+        retention-days: 14
+'on':
+  push:
+    branches:
+    - main
+    - master
+  pull_request: null
+  workflow_dispatch: {}

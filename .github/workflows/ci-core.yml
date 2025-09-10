@@ -1,93 +1,89 @@
 name: CI (Neger)
-
-on:
+true:
   push:
-    branches: ["main","master"]
-  pull_request:
-  workflow_dispatch:
-
+    branches:
+    - main
+    - master
+  pull_request: null
+  workflow_dispatch: null
 permissions:
   contents: write
   pull-requests: write
-
 jobs:
   core:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (full history)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: true
+    - name: Checkout (full history)
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        persist-credentials: true
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Install tools
+      run: 'set -euo pipefail
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        sudo apt-get update
 
-      - name: Install tools
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y shellcheck zip
-          python -m pip install --upgrade pip
-          pip install pyyaml jsonschema intelhex
+        sudo apt-get install -y shellcheck zip
 
-      - name: Run common checks
-        run: bash scripts/ci_basic.sh
+        python -m pip install --upgrade pip
 
-      - name: Export BIN → Intel-HEX for DeepSeek (optional)
-        run: |
-          set -euo pipefail
-          if [ -f scripts/export_bins_to_hex.py ]; then
-            python scripts/export_bins_to_hex.py
-          else
-            echo "export script missing -> skip"
-          fi
+        pip install pyyaml jsonschema intelhex
 
-      - name: Upload artifacts (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-artifacts-linux
-          path: out
+        '
+    - name: Run common checks
+      run: bash scripts/ci_basic.sh
+    - name: "Export BIN \u2192 Intel-HEX for DeepSeek (optional)"
+      run: "set -euo pipefail\nif [ -f scripts/export_bins_to_hex.py ]; then\n  python\
+        \ scripts/export_bins_to_hex.py\nelse\n  echo \"export script missing -> skip\"\
+        \nfi\n"
+    - name: Upload artifacts (always)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ci-artifacts-linux
+        path: out
+    - name: Prepare Git identity (for push on same repo)
+      if: github.event_name == 'push' && github.repository_owner == github.actor
+      run: 'git config --global user.name  "github-actions[bot]"
 
-      - name: Prepare Git identity (for push on same repo)
-        if: github.event_name == 'push' && github.repository_owner == github.actor
-        run: |
-          git config --global user.name  "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - id: commit
-        name: Commit and push generated changes (try)
-        if: github.event_name == 'push' && github.repository_owner == github.actor
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          echo "pushed=false" >> "$GITHUB_OUTPUT"
-          git checkout "${GITHUB_REF_NAME}"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-            echo "pushed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git commit -m "ci: update generated files [skip ci]"
-          if git pull --rebase origin "${GITHUB_REF_NAME}"; then
-            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
-              echo "pushed=true" >> "$GITHUB_OUTPUT"
-            fi
-          fi
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Create PR with changes (fallback)
-        if: |
-          github.event_name != 'pull_request' &&
-          (steps.commit.conclusion == 'failure' || steps.commit.conclusion == 'skipped' || steps.commit.outputs.pushed != 'true')
-        uses: peter-evans/create-pull-request@v6
-        with:
-          commit-message: "ci: update generated files"
-          title: "CI: Update generated files"
-          body: "Automated update from CI."
-          branch: "ci/update-generated-${{ github.run_id }}"
-          base: ${{ github.ref_name || 'main' }}
+        '
+    - id: commit
+      name: Commit and push generated changes (try)
+      if: github.event_name == 'push' && github.repository_owner == github.actor
+      continue-on-error: true
+      run: "set -euo pipefail\necho \"pushed=false\" >> \"$GITHUB_OUTPUT\"\ngit checkout\
+        \ \"${GITHUB_REF_NAME}\"\ngit add -A\nif git diff --cached --quiet; then\n\
+        \  echo \"No changes to commit.\"\n  echo \"pushed=true\" >> \"$GITHUB_OUTPUT\"\
+        \n  exit 0\nfi\ngit commit -m \"ci: update generated files [skip ci]\"\nif\
+        \ git pull --rebase origin \"${GITHUB_REF_NAME}\"; then\n  if git push origin\
+        \ \"HEAD:${GITHUB_REF_NAME}\"; then\n    echo \"pushed=true\" >> \"$GITHUB_OUTPUT\"\
+        \n  fi\nfi\n"
+    - name: Create PR with changes (fallback)
+      if: 'github.event_name != ''pull_request'' &&
+
+        (steps.commit.conclusion == ''failure'' || steps.commit.conclusion == ''skipped''
+        || steps.commit.outputs.pushed != ''true'')
+
+        '
+      uses: peter-evans/create-pull-request@v6
+      with:
+        commit-message: 'ci: update generated files'
+        title: 'CI: Update generated files'
+        body: Automated update from CI.
+        branch: ci/update-generated-${{ github.run_id }}
+        base: ${{ github.ref_name || 'main' }}
+'on':
+  push:
+    branches:
+    - main
+    - master
+  pull_request: null
+  workflow_dispatch: {}
