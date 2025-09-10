@@ -1,139 +1,115 @@
-name: DeepSeek E2E (HEX roundtrip)
-true:
+name: DeepSeek Run
+run-name: >
+  DeepSeek • ${{ inputs.mode || 'prompt' }} • ${{ github.ref_name }}
+  • ${{ github.run_id }}
+
+on:
   workflow_dispatch:
     inputs:
-      timeout_minutes:
-        description: Max wait for DeepSeek jobs
+      mode:
+        description: "Use 'prompt' for inline text or 'file' to read from a repo file"
+        type: choice
+        required: true
+        default: prompt
+        options: [prompt, file]
+      prompt:
+        description: "Prompt text (used when mode=prompt)"
+        type: string
         required: false
-        default: '40'
-permissions:
-  contents: read
-  checks: write
+        default: "Hello from ECUlibre"
+      prompt_path:
+        description: "Path to prompt file in repo (used when mode=file)"
+        type: string
+        required: false
+        default: "prompt.txt"
+      model:
+        description: "DeepSeek model (deepseek-chat or deepseek-reasoner)"
+        type: string
+        required: false
+        default: "deepseek-chat"
+      base_url:
+        description: "API base URL"
+        type: string
+        required: false
+        default: "https://api.deepseek.com"
+
 jobs:
-  e2e:
+  call-deepseek:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
-      DS_BASE: ${{ secrets.DEEPSEEK_API_BASE }}
-      DS_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      DS_DASH: ${{ secrets.DEEPSEEK_DASHBOARD_URL_BASE }}
-      TIMEOUT_MIN: ${{ inputs.timeout_minutes }}
+      MODEL: ${{ inputs.model }}
+      BASE_URL: ${{ inputs.base_url }}
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    - name: Python deps
-      run: 'python -m pip install --upgrade pip
+      - name: Checkout
+        uses: actions/checkout@v4
 
-        pip install intelhex pyyaml jsonschema
+      - name: Prepare prompt
+        id: prep
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.mode }}" == "file" ]]; then
+            [[ -f "${{ inputs.prompt_path }}" ]] || { echo "File not found: ${{ inputs.prompt_path }}"; exit 2; }
+            # JSON-safe: escape content via python
+            PROMPT=$(python3 - <<'PY' "${{ inputs.prompt_path }}"
+import sys, json
+print(json.dumps(open(sys.argv[1], 'r', encoding='utf-8').read()))
+PY
+)
+          else
+            # Inline prompt -> JSON-escape
+            PROMPT=$(python3 - <<'PY' "${{ inputs.prompt }}"
+import sys, json
+print(json.dumps(sys.argv[1]))
+PY
+)
+          fi
+          echo "prompt_json=$PROMPT" >> "$GITHUB_OUTPUT"
 
-        '
-    - name: "Export BIN \u2192 HEX (DeepSeek input)"
-      run: 'set -euo pipefail
+      - name: Guard: API key present
+        shell: bash
+        run: |
+          test -n "${{ secrets.DEEPSEEK_API_KEY }}" || { echo "Set GitHub secret DEEPSEEK_API_KEY"; exit 2; }
 
-        python scripts/export_bins_to_hex.py
+      - name: Call DeepSeek API
+        id: call
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          jq -n \
+            --arg model "$MODEL" \
+            --argjson prompt "${{ steps.prep.outputs.prompt_json }}" \
+            '{
+              model: $model,
+              messages: [
+                {role:"system", content:"You are a concise assistant."},
+                {role:"user",   content:$prompt}
+              ]
+            }' > out/request.json
 
-        echo "### Exported HEX inputs" >> "$GITHUB_STEP_SUMMARY"
+          curl -fsS "${BASE_URL}/chat/completions" \
+            -H "Authorization: Bearer ${{ secrets.DEEPSEEK_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            --data @out/request.json \
+            | tee out/response.json >/dev/null
 
-        find dist/deepseek/incoming -name ''*.hex'' -printf ''* %P\n'' | sort >> "$GITHUB_STEP_SUMMARY"
-        || echo "* none" >> "$GITHUB_STEP_SUMMARY"
+          # Extrahiere reine Antwort (falls Struktur wie OpenAI-kompatibel)
+          jq -r '
+             .choices?[0]?.message?.content
+             // .data?[0]?.text
+             // .output_text
+             // .response
+             // .
+          ' out/response.json > out/response.txt || true
 
-        '
-    - name: Create a GitHub Check for DeepSeek
-      id: check
-      uses: actions/github-script@v7
-      with:
-        script: "const res = await github.rest.checks.create({\n  owner: context.repo.owner,\n\
-          \  repo: context.repo.repo,\n  name: \"DeepSeek processing\",\n  head_sha:\
-          \ context.sha,\n  status: \"in_progress\"\n});\ncore.setOutput(\"check_id\"\
-          , res.data.id);\n"
-    - name: Submit jobs to DeepSeek
-      id: submit
-      run: "set -euo pipefail\ntest -n \"${DS_BASE:-}\" && test -n \"${DS_KEY:-}\"\
-        \ || { echo \"No DeepSeek API base/key configured\"; exit 1; }\nmkdir -p dist/deepseek/jobs\n\
-        : > dist/deepseek/jobs/jobs.jsonl\n: > dist/deepseek/jobs/job_ids.txt\n\n\
-        # Replace the two endpoints below with your real ones from DeepSeek docs:\n\
-        CREATE_URL=\"${DS_BASE%/}/v1/jobs\"       # placeholder\nUPLOAD_URL=\"${DS_BASE%/}/v1/jobs/%s/files\"\
-        \  # placeholder (format with job_id)\nDASH_BASE=\"${DS_DASH:-}\"\n\nshopt\
-        \ -s nullglob\nfor f in dist/deepseek/incoming/**/*.hex dist/deepseek/incoming/*.hex;\
-        \ do\n  [ -f \"$f\" ] || continue\n  echo \"Submitting $f\"\n  # 1) create\
-        \ a job\n  JOB_JSON=\"$(curl -fsS -X POST \"$CREATE_URL\" \\\n    -H \"Authorization:\
-        \ Bearer $DS_KEY\" \\\n    -H \"Content-Type: application/json\" \\\n    -d\
-        \ \"{\\\"task\\\":\\\"ecu_hex_process\\\",\\\"notes\\\":\\\"ECUlibre CI\\\"\
-        ,\\\"metadata\\\":{\\\"source\\\":\\\"github\\\",\\\"path\\\":\\\"${f#dist/}\\\
-        \"}}\" )\"\n\n  JOB_ID=\"$(printf '%s' \"$JOB_JSON\" | jq -r '.job_id // .id')\"\
-        \n  test \"$JOB_ID\" != \"null\" && test -n \"$JOB_ID\" || { echo \"No job_id\
-        \ in response\"; echo \"$JOB_JSON\"; exit 1; }\n\n  printf '%s\\n' \"$JOB_JSON\"\
-        \ >> dist/deepseek/jobs/jobs.jsonl\n  echo \"$JOB_ID\" >> dist/deepseek/jobs/job_ids.txt\n\
-        \n  # 2) upload the HEX file (multipart)\n  UURL=$(printf \"$UPLOAD_URL\"\
-        \ \"$JOB_ID\")\n  curl -fsS -X POST \"$UURL\" \\\n    -H \"Authorization:\
-        \ Bearer $DS_KEY\" \\\n    -F \"file=@$f\" \\\n    -F \"type=hex\" >/dev/null\n\
-        \n  # Optional: add dashboard link to step summary\n  if [ -n \"$DASH_BASE\"\
-        \ ]; then\n    echo \"* [$JOB_ID]($DASH_BASE/$JOB_ID)\" >> \"$GITHUB_STEP_SUMMARY\"\
-        \n  else\n    echo \"* $JOB_ID\" >> \"$GITHUB_STEP_SUMMARY\"\n  fi\ndone\n\
-        \nif [ ! -s dist/deepseek/jobs/job_ids.txt ]; then\n  echo \"No HEX files\
-        \ found to submit.\"\n  exit 0\nfi\n"
-    - name: Poll DeepSeek until complete
-      if: always()
-      id: poll
-      run: "set -euo pipefail\nif [ ! -s dist/deepseek/jobs/job_ids.txt ]; then\n\
-        \  echo \"no_jobs=true\" >> \"$GITHUB_OUTPUT\"\n  exit 0\nfi\n\nSTATUS_URL=\"\
-        ${DS_BASE%/}/v1/jobs/%s\"           # placeholder\nRESULT_URL=\"${DS_BASE%/}/v1/jobs/%s/result\"\
-        \    # placeholder\n\nmkdir -p dist/deepseek/output\ndeadline=$(( $(date +%s)\
-        \ + ${TIMEOUT_MIN:-40}*60 ))\npending=( $(cat dist/deepseek/jobs/job_ids.txt)\
-        \ )\n\nwhile [ ${#pending[@]} -gt 0 ]; do\n  now=$(date +%s)\n  [ $now -lt\
-        \ $deadline ] || { echo \"Timeout waiting for DeepSeek jobs\"; break; }\n\n\
-        \  new_pending=()\n  for id in \"${pending[@]}\"; do\n    SURL=$(printf \"\
-        $STATUS_URL\" \"$id\")\n    js=\"$(curl -fsS -H \"Authorization: Bearer $DS_KEY\"\
-        \ \"$SURL\" || true)\"\n    st=\"$(printf '%s' \"$js\" | jq -r '.status //\
-        \ \"unknown\"')\"\n    echo \"job $id -> $st\"\n\n    case \"$st\" in\n  \
-        \    completed|succeeded|success)\n        RURL=$(printf \"$RESULT_URL\" \"\
-        $id\")\n        # Expect a HEX file in body; adapt if JSON wrapper is used\n\
-        \        curl -fsS -H \"Authorization: Bearer $DS_KEY\" \"$RURL\" -o \"dist/deepseek/output/${id}.hex\"\
-        \n        ;;\n      failed|error)\n        echo \"Job $id failed\"\n     \
-        \   ;;\n      *)\n        new_pending+=(\"$id\")\n        ;;\n    esac\n \
-        \ done\n\n  pending=(\"${new_pending[@]}\")\n  [ ${#pending[@]} -gt 0 ] &&\
-        \ sleep 15\ndone\n\n# Summarize\necho \"### DeepSeek results\" >> \"$GITHUB_STEP_SUMMARY\"\
-        \nif compgen -G \"dist/deepseek/output/*.hex\" > /dev/null; then\n  for x\
-        \ in dist/deepseek/output/*.hex; do echo \"* $(basename \"$x\")\" >> \"$GITHUB_STEP_SUMMARY\"\
-        ; done\nelse\n  echo \"* none\" >> \"$GITHUB_STEP_SUMMARY\"\nfi\n"
-    - name: Mark Check Run status
-      if: always()
-      uses: actions/github-script@v7
-      with:
-        script: "const check_id = Number(core.getInput('check_id', {required:false})\
-          \ || '${{ steps.check.outputs.check_id }}');\nif (!check_id) { return; }\n\
-          const anyResults = await exec.getExecOutput('bash', ['-lc', 'compgen -G\
-          \ \"dist/deepseek/output/*.hex\" >/dev/null && echo yes || echo no']);\n\
-          const conclusion = anyResults.stdout.trim()==='yes' ? 'success' : 'failure';\n\
-          await github.rest.checks.update({\n  owner: context.repo.owner,\n  repo:\
-          \ context.repo.repo,\n  check_run_id: check_id,\n  status: 'completed',\n\
-          \  conclusion\n});\n"
-    - name: "Import HEX \u2192 BIN + Windows ZIPs"
-      if: always()
-      run: 'set -euo pipefail
-
-        python scripts/import_hex_to_bins.py
-
-        '
-    - name: Upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: deepseek-roundtrip
-        path: 'dist/deepseek/incoming/**/*
-
-          dist/deepseek/output/*.hex
-
-          dist/windows/*.zip
-
-          dist/windows/manifest-windows.csv
-
-          '
-'on':
-  push:
-    branches:
-    - main
-    - master
-  pull_request: null
-  workflow_dispatch: {}
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepseek-output
+          path: |
+            out/request.json
+            out/response.json
+            out/response.txt

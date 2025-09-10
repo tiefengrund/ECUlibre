@@ -1,7 +1,6 @@
 name: ECU Analysis
 run-name: >
-  ECU Analysis • ${{ github.event_name }} • ${{ github.ref_name }}
-  • ${{ github.event.head_commit.timestamp || github.event.pull_request.updated_at || github.event.pull_request.created_at || '' }}
+  ECU Analysis • ${% raw %}{{ github.event_name }}{{ github.ref_name }}{{ github.run_id }}{% endraw %}
 
 on:
   push:
@@ -14,11 +13,10 @@ jobs:
     name: Repo Checks (in dev container)
     runs-on: ubuntu-latest
     container:
-      # Passe den Owner an, falls nötig; GHCR-Pfade müssen lowercase sein
       image: ghcr.io/tiefengrund/eculibre/dev:latest
       credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+        username: ${% raw %}{{ github.actor }}{% endraw %}
+        password: ${% raw %}{{ secrets.GITHUB_TOKEN }}{% endraw %}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,11 +28,6 @@ jobs:
       - name: Lint scripts
         run: |
           find scripts -type f -maxdepth 1 -perm -111 -print0 2>/dev/null | xargs -0 -r shellcheck || true
-
-      - name: YAML sanity (optional, fängt Formatfehler früh)
-        run: |
-          pip install --no-cache-dir yamllint
-          yamllint .github/workflows || true
 
       - name: Structure check (strict)
         run: ./eculibre.sh check --strict
