@@ -56,3 +56,16 @@ jobs:
           path: |
             reports/deepseek/*.json
             reports/deepseek/*.html
+      - name: Evaluate DeepSeek reports
+        env:
+          MIN_SCORE: "60"
+          FAIL_ON_LOW_SCORE: "0"   # auf "1" setzen, wenn die CI bei schwachen Ergebnissen rot werden soll
+        run: |
+          python scripts/evaluate_deepseek_reports.py
+
+      - name: Upload evaluation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepseek-eval
+          path: reports/deepseek/*.eval.json
+          if-no-files-found: ignore
