@@ -17,7 +17,6 @@ jobs:
       packages: write
     outputs:
       image: ${{ steps.meta.outputs.image }}
-      owner_lc: ${{ steps.meta.outputs.owner_lc }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,7 +25,6 @@ jobs:
         shell: bash
         run: |
           OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "owner_lc=${OWNER_LC}" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${OWNER_LC}/eculibre/dev:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Login to GHCR
@@ -36,6 +34,14 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 👉 Use Buildx with docker-container driver so GHA cache works
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+          driver: docker-container
+          driver-opts: image=moby/buildkit:latest
+
       - name: Build & Push dev image
         uses: docker/build-push-action@v6
         with:
@@ -44,7 +50,7 @@ jobs:
           push: true
           tags: |
             ${{ steps.meta.outputs.image }}
-            ghcr.io/${{ steps.meta.outputs.owner_lc }}/eculibre/dev:latest
+            ghcr.io/${{ github.repository_owner }}/eculibre/dev:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -70,7 +76,6 @@ jobs:
 
       - name: Lint scripts
         run: |
-          # shellcheck is in the dev image; if not, this still won't fail the job
           find scripts -type f -maxdepth 1 -perm -111 -print0 2>/dev/null | xargs -0 -r shellcheck || true
           test -x ./eculibre.sh && shellcheck ./eculibre.sh || true
 
