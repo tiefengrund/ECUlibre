@@ -4,38 +4,42 @@ run-name: ECU Map Visualizer • ${{ github.event_name }} • ${{ github.ref_nam
 
 on:
   push:
-    branches: ['**']
+    branches: ['**']           # für JEDEN Push
   workflow_dispatch:
     inputs:
       bins:
-        description: "Glob for .bin files"
+        description: "Glob für .bin-Dateien (Standard: alles unter rawdata)"
         type: string
         default: "rawdata/**/*.bin"
         required: false
       specs:
-        description: "Glob for map spec files (YAML)"
+        description: "Glob für Map-Spezifikationen (YAML)"
         type: string
         default: "mapspecs/**/*.y?(a)ml"
         required: false
       deepseek:
-        description: "Glob for DeepSeek map JSON (optional)"
+        description: "Glob für DeepSeek-Map-JSON (optional)"
         type: string
         default: "deepseek/maps/**/*.json"
         required: false
       outdir:
-        description: "Output directory"
+        description: "Output-Verzeichnis"
         type: string
         default: "out/mapviz"
         required: false
       commit_results:
-        description: "Commit figures & CSV into repo (docs/mapviz)"
+        description: "Ergebnisse nach docs/mapviz committen"
         type: boolean
         default: false
         required: false
 
 permissions:
-  contents: write   # allows optional commit/push
+  contents: write   # erlaubt optionalen Commit
   actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   visualize:
@@ -43,10 +47,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        with: { fetch-depth: 0 }
 
-      - name: Set up Python
+      - name: Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -55,9 +58,9 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install numpy pyyaml jsonschema matplotlib==3.* pillow plotly
+          pip install numpy pyyaml jsonschema matplotlib==3.* pillow
 
-      - name: Write example spec (only if none found)
+      - name: Beispiel-Mapspezifikation anlegen (falls keine vorhanden)
         shell: bash
         run: |
           shopt -s nullglob
@@ -69,37 +72,35 @@ schema_version: "1.0"
 dataset_hint:
   brand: "Generic"
   model: "Example"
-  notes: "This is a sample spec; adjust offsets and shapes for your ECU."
+  notes: "Sample spec; set real offsets/sizes for your ECU."
 maps:
   - name: "Torque_Limit"
-    offset: 0x001000  # <-- change to real offset
+    offset: 0x001000
     rows: 16
     cols: 16
-    dtype: u16        # one of: u8,s8,u16,s16,u32,s32,f32
+    dtype: u16        # u8,s8,u16,s16,u32,s32,f32
     endian: little    # little|big
-    scale: 0.1        # multiply
-    add: 0.0          # add
+    scale: 0.1
+    add: 0.0
     x_axis: { start: 0, step: 250, count: 16, unit: "rpm" }
     y_axis: { start: 0, step: 10,  count: 16, unit: "load" }
 YAML
             echo "Wrote mapspecs/example_torque.yml"
           fi
 
-      - name: Drop mapviz.py if missing (self-contained)
+      - name: mapviz.py (self-contained Reporter & Visualizer)
         shell: bash
         run: |
           mkdir -p tools
-          if [[ ! -f tools/mapviz.py ]]; then
-            cat > tools/mapviz.py <<'PY'
+          cat > tools/mapviz.py <<'PY'
 #!/usr/bin/env python3
-import argparse, json, math, os, sys, glob, pathlib
-from typing import Dict, Any, List, Tuple
-import yaml
+import argparse, json, os, sys, glob, hashlib, math, pathlib, re
+from typing import Dict, Any, List, Tuple, Optional
 import numpy as np
+import yaml
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 DTYPES = {
     "u8": np.uint8, "s8": np.int8,
@@ -114,20 +115,61 @@ def to_int(x):
     if isinstance(x, str) and x.lower().startswith("0x"): return int(x, 16)
     return int(x)
 
+def sha256_path(p)->str:
+    h=hashlib.sha256()
+    with open(p,"rb") as f:
+        for chunk in iter(lambda: f.read(1<<20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def shannon_entropy(data: bytes) -> float:
+    if not data: return 0.0
+    from collections import Counter
+    c = Counter(data)
+    n = len(data)
+    return -sum((cnt/n)*math.log2(cnt/n) for cnt in c.values())
+
+def find_strings(data: bytes, minlen=6, limit=50) -> List[str]:
+    out=[]
+    cur=[]
+    for b in data:
+        if 32 <= b <= 126:    # printable
+            cur.append(chr(b))
+        else:
+            if len(cur) >= minlen:
+                out.append("".join(cur))
+                if len(out) >= limit:
+                    break
+            cur=[]
+    if len(cur) >= minlen and len(out) < limit:
+        out.append("".join(cur))
+    return out
+
+def byte_histogram(data: bytes, png: str):
+    arr = np.frombuffer(data, dtype=np.uint8)
+    hist, bins = np.histogram(arr, bins=256, range=(0,256))
+    fig = plt.figure(figsize=(10,4))
+    ax = fig.add_subplot(111)
+    ax.bar(np.arange(256), hist, width=1.0)
+    ax.set_title("Byte histogram")
+    ax.set_xlabel("byte"); ax.set_ylabel("count")
+    fig.tight_layout(); fig.savefig(png, dpi=150); plt.close(fig)
+
 def load_specs(patterns: List[str]) -> List[Dict[str, Any]]:
-    files = []
-    for pat in patterns:
-        files.extend(glob.glob(pat, recursive=True))
+    files=[]
+    for pat in patterns: files.extend(glob.glob(pat, recursive=True))
     specs=[]
     for p in files:
-        with open(p, "r", encoding="utf-8") as f:
-            specs.append(yaml.safe_load(f))
+        try:
+            with open(p,"r",encoding="utf-8") as f:
+                specs.append(yaml.safe_load(f))
+        except Exception as e:
+            print(f"[spec] skip {p}: {e}", file=sys.stderr)
     return specs
 
 def index_deepseek(patterns: List[str]) -> Dict[str, Dict[str, Any]]:
     files=[]
-    for pat in patterns:
-        files.extend(glob.glob(pat, recursive=True))
+    for pat in patterns: files.extend(glob.glob(pat, recursive=True))
     idx={}
     for p in files:
         try:
@@ -145,12 +187,11 @@ def index_deepseek(patterns: List[str]) -> Dict[str, Dict[str, Any]]:
                 vals = m.get("values") or m.get("data")
                 rows = m.get("rows") or m.get("height")
                 cols = m.get("cols") or m.get("width")
-                if isinstance(vals, list):
-                    arr = np.array(vals, dtype=np.float64)
-                    if rows and cols:
-                        arr = arr.reshape((int(rows), int(cols)))
-                else:
-                    continue
+                if vals is None: continue
+                arr = np.array(vals, dtype=np.float64)
+                if rows and cols:
+                    try: arr = arr.reshape((int(rows), int(cols)))
+                    except Exception: pass
                 idx[name] = {"array": arr, "source": p}
         except Exception as e:
             print(f"[deepseek] skip {p}: {e}", file=sys.stderr)
@@ -158,16 +199,11 @@ def index_deepseek(patterns: List[str]) -> Dict[str, Dict[str, Any]]:
 
 def mesh_axes(spec_map, rows, cols):
     def axbuild(axspec, count):
-        if not axspec:
-            return np.arange(count, dtype=np.float64)
+        if not axspec: return np.arange(count, dtype=np.float64)
         if "values" in axspec:
             vals = np.array(axspec["values"], dtype=np.float64)
             if len(vals) != count:
-                # pad/trim
-                if len(vals) < count:
-                    vals = np.pad(vals, (0, count-len(vals)), mode="edge")
-                else:
-                    vals = vals[:count]
+                vals = np.resize(vals, (count,))
             return vals
         start = float(axspec.get("start", 0.0))
         step  = float(axspec.get("step", 1.0))
@@ -196,13 +232,12 @@ def read_map_from_bin(bin_path, m: Dict[str,Any]) -> np.ndarray:
         return arr
 
 def save_csv(path, X, Y, Z):
-    # rows in Y, cols in X
     with open(path,"w",encoding="utf-8") as f:
         f.write("y\\x," + ",".join(map(str, X[0].tolist())) + "\n")
         for r in range(Z.shape[0]):
             f.write(str(Y[r,0]) + "," + ",".join(map(lambda v: f"{v:.6g}", Z[r,:])) + "\n")
 
-def plot_surfaces(outpng, title, X, Y, Zbin, Zds=None):
+def surface_pair(outpng, title, X, Y, Zbin, Zds=None):
     if Zds is not None and Zds.shape != Zbin.shape:
         Zds=None
     if Zds is None:
@@ -219,15 +254,13 @@ def plot_surfaces(outpng, title, X, Y, Zbin, Zds=None):
         ax2.plot_surface(X, Y, Zds, cmap="plasma", linewidth=0, antialiased=True)
         ax2.set_title(title + " (DeepSeek)")
     for ax in fig.axes:
-        if hasattr(ax, 'set_xlabel'):
-            ax.set_xlabel("X")
-            ax.set_ylabel("Y")
-            ax.set_zlabel("Z")
-    fig.tight_layout()
-    fig.savefig(outpng, dpi=200)
-    plt.close(fig)
+        try:
+            ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
+        except Exception:
+            pass
+    fig.tight_layout(); fig.savefig(outpng, dpi=200); plt.close(fig)
 
-def plot_diff(outpng, title, X, Y, Zbin, Zds):
+def surface_diff(outpng, title, X, Y, Zbin, Zds):
     D = Zds - Zbin
     fig = plt.figure(figsize=(8,7))
     ax = fig.add_subplot(111, projection="3d")
@@ -236,8 +269,122 @@ def plot_diff(outpng, title, X, Y, Zbin, Zds):
     ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("ΔZ")
     fig.tight_layout(); fig.savefig(outpng, dpi=200); plt.close(fig)
 
+def read_metadata_for_bin(bin_path: str) -> Dict[str,str]:
+    """
+    Versucht metadata.yml aus der Rawdata-Struktur hochzulaufen.
+    """
+    p = pathlib.Path(bin_path).resolve()
+    for parent in [p.parent] + list(p.parents):
+        cand = parent / "metadata.yml"
+        if cand.exists():
+            try:
+                import yaml
+                with open(cand,"r",encoding="utf-8") as f:
+                    y = yaml.safe_load(f) or {}
+                keep = {k:str(v) for k,v in y.items() if k in ("brand","model","generation","ecu_vendor","ecu_model","firmware","region","schema_version")}
+                return keep
+            except Exception:
+                pass
+    return {}
+
+def analyze_bin(bin_path: str, outdir: str):
+    dat = pathlib.Path(bin_path).read_bytes()
+    info = {
+        "path": str(bin_path),
+        "size_bytes": len(dat),
+        "sha256": sha256_path(bin_path),
+        "entropy_bits_per_byte": round(shannon_entropy(dat), 4),
+        "pct_zero": round(100.0*dat.count(0)/max(1,len(dat)), 3),
+    }
+    png_hist = os.path.join(outdir, "histogram.png")
+    byte_histogram(dat, png_hist)
+    strings = find_strings(dat, minlen=6, limit=40)
+    return info, strings, os.path.relpath(png_hist)
+
+def render_report(bin_path: str, out_dir: str, maps: List[Dict[str,Any]], ds_idx: Dict[str,Dict[str,Any]]):
+    os.makedirs(out_dir, exist_ok=True)
+    info, strings, hist_rel = analyze_bin(bin_path, out_dir)
+
+    # Markdown-Report Kopf
+    md = []
+    md.append(f"# Report for `{os.path.basename(bin_path)}`")
+    md.append("")
+    md.append("## File Info")
+    md.append("")
+    meta = read_metadata_for_bin(bin_path)
+    if meta:
+        md.append("**Metadata (from metadata.yml):**  " + ", ".join([f"{k}={v}" for k,v in meta.items()]))
+    md.append(f"- Path: `{info['path']}`")
+    md.append(f"- Size: `{info['size_bytes']}` bytes")
+    md.append(f"- SHA256: `{info['sha256']}`")
+    md.append(f"- Shannon entropy: `{info['entropy_bits_per_byte']}` bits/byte")
+    md.append(f"- Zero bytes: `{info['pct_zero']}%`")
+    md.append("")
+    md.append("### Byte histogram")
+    md.append(f"![histogram]({hist_rel})")
+    md.append("")
+
+    if strings:
+        md.append("### Top printable strings (first 40)")
+        for s in strings:
+            s = s.replace("|","\\|")
+            md.append(f"- `{s}`")
+        md.append("")
+
+    # Maps
+    if not maps:
+        md.append("> No maps found from specs.")
+    else:
+        md.append("## Maps")
+        for m in maps:
+            name = str(m.get("name","<unnamed>"))
+            safe = re.sub(r'[^a-zA-Z0-9_.-]+', '_', name)
+            try:
+                Zbin = read_map_from_bin(bin_path, m)
+            except Exception as e:
+                md.append(f"### {name}\n- ⚠️ {e}\n")
+                continue
+            rows, cols = Zbin.shape
+            X, Y = mesh_axes(m, rows, cols)
+
+            # DS overlay if shape compatible
+            Zds = None
+            if name in ds_idx:
+                try:
+                    ZdsCand = np.array(ds_idx[name]["array"], dtype=float)
+                    if ZdsCand.shape == Zbin.shape:
+                        Zds = ZdsCand
+                except Exception:
+                    Zds = None
+
+            # outputs
+            png_pair = os.path.join(out_dir, f"{safe}.pair.png")
+            surface_pair(png_pair, name, X, Y, Zbin, Zds)
+            csv_path = os.path.join(out_dir, f"{safe}.csv")
+            save_csv(csv_path, X, Y, Zbin)
+
+            md.append(f"### {name}")
+            md.append("")
+            md.append(f"**Offset:** `0x{to_int(m['offset']):X}`, **shape:** `{rows}×{cols}`, **dtype:** `{m.get('dtype','u16')}`, **endian:** `{m.get('endian','little')}`  ")
+            md.append(f"[CSV]({os.path.relpath(csv_path)})  ")
+            md.append(f"![{name}]({os.path.relpath(png_pair)})")
+            md.append("")
+
+            if Zds is not None:
+                png_diff = os.path.join(out_dir, f"{safe}.diff.png")
+                surface_diff(png_diff, name, X, Y, Zbin, Zds)
+                md.append(f"**Diff (DeepSeek − BIN):**")
+                md.append(f"![{name} diff]({os.path.relpath(png_diff)})")
+                md.append("")
+
+    # Save report
+    rep = os.path.join(out_dir, "REPORT.md")
+    with open(rep, "w", encoding="utf-8") as f:
+        f.write("\n".join(md) + "\n")
+    return rep
+
 def main():
-    ap = argparse.ArgumentParser(description="ECU map visualizer (BIN vs DeepSeek JSON)")
+    ap = argparse.ArgumentParser(description="ECU map visualizer: for EACH .bin under rawdata, build a Markdown report with 3D maps and DeepSeek overlay.")
     ap.add_argument("--bins", default="rawdata/**/*.bin")
     ap.add_argument("--specs", default="mapspecs/**/*.y?(a)ml")
     ap.add_argument("--deepseek", default="deepseek/maps/**/*.json")
@@ -248,64 +395,35 @@ def main():
     spec_objs = load_specs([args.specs])
     ds_index = index_deepseek([args.deepseek])
 
-    if not bin_paths:
-        print(f"No .bin files matched: {args.bins}", file=sys.stderr)
-    pathlib.Path(args.outdir).mkdir(parents=True, exist_ok=True)
-
-    # Collect maps from all spec files
+    # Flatten maps from all specs
     all_maps=[]
     for spec in spec_objs:
-        for m in spec.get("maps", []):
+        for m in (spec.get("maps") or []):
             all_maps.append(m)
 
-    # Summary markdown
-    summary_lines = ["# Map Visualization Summary\n"]
+    pathlib.Path(args.outdir).mkdir(parents=True, exist_ok=True)
 
-    for bin_path in bin_paths:
-        base = pathlib.Path(bin_path).name
-        outbase = pathlib.Path(args.outdir) / pathlib.Path(base).with_suffix("")
-        outbase.mkdir(parents=True, exist_ok=True)
-        for m in all_maps:
-            name = str(m["name"])
-            try:
-                Zbin = read_map_from_bin(bin_path, m)
-            except Exception as e:
-                print(f"[WARN] {base}:{name}: {e}", file=sys.stderr)
-                continue
-            rows, cols = Zbin.shape
-            X, Y = mesh_axes(m, rows, cols)
+    index_lines = ["# Map Visualization Index", ""]
+    if not bin_paths:
+        print(f"[INFO] no .bin matched: {args.bins}", file=sys.stderr)
 
-            Zds = None
-            if name in ds_index:
-                Zcand = ds_index[name]["array"]
-                try:
-                    Zds = Zcand.astype(float)
-                except Exception:
-                    Zds = None
+    for binp in bin_paths:
+        base = pathlib.Path(binp).name
+        dst = pathlib.Path(args.outdir) / pathlib.Path(base).with_suffix("")
+        dst.mkdir(parents=True, exist_ok=True)
+        rep = render_report(binp, str(dst), all_maps, ds_index)
+        index_lines.append(f"- [{base}]({os.path.relpath(rep, args.outdir)})")
 
-            safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
-            png = outbase / f"{safe_name}.png"
-            plot_surfaces(str(png), f"{name}", X, Y, Zbin, Zds)
-
-            csvp = outbase / f"{safe_name}.csv"
-            save_csv(str(csvp), X, Y, Zbin)
-
-            if Zds is not None and Zds.shape == Zbin.shape:
-                dpng = outbase / f"{safe_name}.diff.png"
-                plot_diff(str(dpng), f"{name}", X, Y, Zbin, Zds)
-
-            summary_lines.append(f"- **{base} / {name}** → `{png}`" + (" (with DeepSeek)" if Zds is not None else ""))
-
-    with open(os.path.join(args.outdir, "SUMMARY.md"), "w", encoding="utf-8") as f:
-        f.write("\n".join(summary_lines) + "\n")
+    # Global SUMMARY
+    with open(os.path.join(args.outdir, "INDEX.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(index_lines) + "\n")
 
 if __name__ == "__main__":
     main()
 PY
-            chmod +x tools/mapviz.py
-          fi
+          chmod +x tools/mapviz.py
 
-      - name: Run visualizer
+      - name: Visualize ALL bins in rawdata
         env:
           BINS: ${{ inputs.bins || 'rawdata/**/*.bin' }}
           SPECS: ${{ inputs.specs || 'mapspecs/**/*.y?(a)ml' }}
@@ -318,14 +436,14 @@ PY
             --deepseek "${DEEPSEEK}" \
             --outdir  "${OUTDIR}"
 
-      - name: Upload figures & CSV
+      - name: Upload artifacts (reports + figures)
         uses: actions/upload-artifact@v4
         with:
           name: mapviz-output
           path: |
             ${{ inputs.outdir || 'out/mapviz' }}/**
 
-      - name: Optionally commit results to docs/mapviz
+      - name: Optional commit to docs/mapviz
         if: ${{ inputs.commit_results }}
         run: |
           mkdir -p docs/mapviz
@@ -333,5 +451,5 @@ PY
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/mapviz
-          git commit -m "docs(mapviz): update figures & CSV [skip ci]" || echo "Nothing to commit"
+          git commit -m "docs(mapviz): add/update reports (auto)" || echo "Nothing to commit"
           git push
