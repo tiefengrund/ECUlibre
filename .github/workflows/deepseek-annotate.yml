@@ -1,74 +1,195 @@
-name: DeepSeek annotate (HEX)
-true:
-  workflow_dispatch: {}
+name: DeepSeek Annotate
+run-name: >
+  DeepSeek • ${{ github.event_name }} • ${{ github.ref_name }} • ${{ github.run_id }}
+
+on:
   push:
-    paths:
-    - dist/deepseek/incoming/**/*.hex
-    - dist/deepseek/incoming/*.hex
+    branches:
+      - '**'
+  workflow_dispatch:
+    inputs:
+      prompt_mode:
+        description: "Use 'text' for inline prompt or 'file' to read from repo"
+        type: choice
+        required: true
+        default: text
+        options: [text, file]
+      prompt_text:
+        description: "Prompt text (used when prompt_mode=text)"
+        type: string
+        required: false
+        default: "Summarize the key points."
+      prompt_path:
+        description: "Path to prompt file in repo (used when prompt_mode=file)"
+        type: string
+        required: false
+        default: "prompt.txt"
+      model:
+        description: "DeepSeek model"
+        type: string
+        required: false
+        default: "deepseek-chat"
+      base_url:
+        description: "API base URL"
+        type: string
+        required: false
+        default: "https://api.deepseek.com"
+      commit_results:
+        description: "Commit response back into repo (docs/deepseek/ANNOTATIONS.md)"
+        type: boolean
+        required: false
+        default: false
+
 permissions:
-  contents: read
+  contents: write        # erlaubt commit/push
+  pull-requests: write   # erlaubt PR-Änderungen (z. B. Re-open)
+  issues: write          # nötig für PR-Kommentare (Issues-API)
+
 jobs:
   annotate:
     runs-on: ubuntu-latest
     env:
-      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      DEEPSEEK_BASE_URL: https://api.deepseek.com
-      DEEPSEEK_MODEL: deepseek-reasoner
+      MODEL: ${{ inputs.model || 'deepseek-chat' }}
+      BASE_URL: ${{ inputs.base_url || 'https://api.deepseek.com' }}
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-    - name: Install deps
-      run: 'python -m pip install --upgrade pip
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
-        pip install requests
+      - name: Prepare prompt
+        id: prep
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ "${{ inputs.prompt_mode }}" == "file" ]]; then
+              [[ -f "${{ inputs.prompt_path }}" ]] || { echo "File not found: ${{ inputs.prompt_path }}"; exit 2; }
+              PROMPT_JSON=$(python3 - <<'PY' "${{ inputs.prompt_path }}"
+import sys, json
+print(json.dumps(open(sys.argv[1],'r',encoding='utf-8').read()))
+PY
+)
+            else
+              PROMPT_JSON=$(python3 - <<'PY' "${{ inputs.prompt_text || 'Summarize the key points.' }}"
+import sys, json
+print(json.dumps(sys.argv[1]))
+PY
+)
+            fi
+          else
+            # Push-Default: commit message + Diff-Stat als Prompt
+            MSG="$(git log -1 --pretty=%B)"
+            DIFF="$(git diff --name-status HEAD~1..HEAD || true)"
+            PROMPT_TEXT="Summarize this push on branch '${GITHUB_REF_NAME}'. Commit message:
+${MSG}
 
-        '
-    - name: Submit HEX chunks to DeepSeek (JSON annotations)
-      run: 'set -euo pipefail
+Changed files (name-status):
+${DIFF}"
+            PROMPT_JSON=$(python3 - <<'PY' "$PROMPT_TEXT"
+import sys, json
+print(json.dumps(sys.argv[1]))
+PY
+)
+          fi
+          echo "prompt_json=$PROMPT_JSON" >> "$GITHUB_OUTPUT"
 
-        python scripts/deepseek_submit_annotations.py
+      - name: Ensure API key
+        shell: bash
+        run: |
+          test -n "${{ secrets.DEEPSEEK_API_KEY }}" || { echo "Set secret DEEPSEEK_API_KEY"; exit 2; }
 
-        '
-    - name: Build HTML visualization
-      run: 'set -euo pipefail
+      - name: Call DeepSeek
+        id: call
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          jq -n \
+            --arg model "$MODEL" \
+            --argjson prompt "${{ steps.prep.outputs.prompt_json }}" \
+            '{
+              model: $model,
+              messages: [
+                {role:"system", content:"You are a concise assistant."},
+                {role:"user",   content:$prompt}
+              ]
+            }' > out/request.json
 
-        python scripts/hex_visualize_annotations.py
+          curl -fsS "${BASE_URL}/chat/completions" \
+            -H "Authorization: Bearer ${{ secrets.DEEPSEEK_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            --data @out/request.json \
+            | tee out/response.json >/dev/null
 
-        '
-    - name: Summary
-      run: "echo \"### China-B\xF6ller Berichte\" >> \"$GITHUB_STEP_SUMMARY\"\nif\
-        \ compgen -G \"reports/china-boeller/*.html\" > /dev/null; then\n  for f in\
-        \ reports/china-boeller/*.html; do\n    echo \"* $(basename \"$f\")\" >> \"\
-        $GITHUB_STEP_SUMMARY\"\n  done\nelse\n  echo \"* none\" >> \"$GITHUB_STEP_SUMMARY\"\
-        \nfi\n"
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: china-boeller
-        path: 'reports/china-boeller/*.json
+          jq -r '
+            .choices?[0]?.message?.content
+            // .data?[0]?.text
+            // .output_text
+            // .response
+            // .
+          ' out/response.json > out/response.txt || true
 
-          reports/china-boeller/*.html
+      - name: Find PR for this branch (push only)
+        id: findpr
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const {owner, repo} = context.repo;
+            const branch = context.ref.replace('refs/heads/', '');
+            const prs = await github.rest.pulls.list({owner, repo, state: 'open', head: `${owner}:${branch}`});
+            return prs.data.length ? String(prs.data[0].number) : '';
 
-          '
-    - name: Evaluate DeepSeek reports
-      env:
-        MIN_SCORE: '60'
-        FAIL_ON_LOW_SCORE: '0'
-      run: 'python scripts/evaluate_deepseek_reports.py
+      - name: Comment on PR (if any)
+        if: ${{ github.event_name == 'pull_request' || steps.findpr.outputs.result != '' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('out/response.txt','utf8') || '(empty response)';
+            const {owner, repo} = context.repo;
+            const number = context.payload.pull_request ? context.payload.pull_request.number : Number(core.getInput('pr_number') || '${{ steps.findpr.outputs.result }}');
+            if (!number) { core.info('No PR to annotate.'); return; }
+            await github.rest.issues.createComment({ owner, repo, issue_number: number, body: `### DeepSeek Annotation\n\n${body}` });
+            core.info(`Commented on PR #${number}`);
 
-        '
-    - name: "Upload evaluation artifacts (China-B\xF6ller)"
-      uses: actions/upload-artifact@v4
-      with:
-        name: china-boeller-eval
-        path: reports/china-boeller/*.eval.json
-        if-no-files-found: ignore
-'on':
-  push:
-    branches:
-    - main
-    - master
-  pull_request: null
-  workflow_dispatch: {}
+      - name: Optionally commit response into repo
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.commit_results) || github.event_name == 'push' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Verhindere Endlosschleife: nicht commiten, wenn der Actor der Bot ist UND die letzte Änderung aus /docs/deepseek kam
+          if [[ "${{ github.actor }}" == "github-actions[bot]" ]]; then
+            echo "Skip commit to avoid loops (actor=github-actions[bot])"
+            exit 0
+          fi
+          mkdir -p docs/deepseek
+          ts="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo -e "## ${ts} • ${GITHUB_REF_NAME} • ${GITHUB_SHA}\n" > docs/deepseek/LAST_RESPONSE.md
+          cat out/response.txt >> docs/deepseek/LAST_RESPONSE.md
+          echo "" >> docs/deepseek/LAST_RESPONSE.md
+          # Append to rolling log
+          {
+            echo -e "## ${ts} • ${GITHUB_REF_NAME} • ${GITHUB_SHA}\n"
+            cat out/response.txt
+            echo -e "\n---\n"
+          } >> docs/deepseek/ANNOTATIONS.md
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/deepseek/LAST_RESPONSE.md docs/deepseek/ANNOTATIONS.md
+          git commit -m "chore(deepseek): annotate ${GITHUB_REF_NAME} ${GITHUB_SHA::7}"
+          git push
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepseek-annotate-output
+          path: |
+            out/request.json
+            out/response.json
+            out/response.txt
+            docs/deepseek/LAST_RESPONSE.md
+            docs/deepseek/ANNOTATIONS.md
