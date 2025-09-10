@@ -15,8 +15,8 @@ jobs:
     container:
       image: ghcr.io/tiefengrund/eculibre/dev:latest
       credentials:
-        username: ${% raw %}{{ github.actor }}{% endraw %}
-        password: ${% raw %}{{ secrets.GITHUB_TOKEN }}{% endraw %}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
