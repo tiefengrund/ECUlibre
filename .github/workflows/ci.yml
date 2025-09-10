@@ -33,59 +33,48 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyyaml jsonschema
 
-      - name: Bootstrap + Lint + Validate (logs saved)
+      - name: Run bootstrap (if present)
         run: |
-          set -Eeuo pipefail
+          set -euo pipefail
+          if [ -x scripts/bootstrap_eculibre.sh ]; then
+            scripts/bootstrap_eculibre.sh
+          else
+            echo "bootstrap script not found -> skip"
+          fi
+
+      - name: Shell lint (if scripts present)
+        run: |
+          set -euo pipefail
+          if [ -d scripts ]; then
+            find scripts -maxdepth 1 -type f -perm -111 -print0 2>/dev/null | xargs -0 -r shellcheck
+          else
+            echo "no scripts/ dir -> skip shellcheck"
+          fi
+
+      - name: Schema validate (if files present)
+        run: |
+          set -euo pipefail
+          if [ -f schemas/metadata.schema.yaml ] && [ -f scripts/validate_metadata.py ]; then
+            python scripts/validate_metadata.py
+          else
+            echo "schema or validator missing -> skip"
+          fi
+
+      - name: Repo check (if present)
+        run: |
+          set -euo pipefail
+          if [ -x scripts/check_repo.sh ]; then
+            scripts/check_repo.sh
+          else
+            echo "check_repo.sh not found -> skip"
+          fi
+
+      - name: Pack snapshot
+        run: |
+          set -euo pipefail
           mkdir -p out
-          {
-            echo ">>> bootstrap"
-            if [ -x scripts/bootstrap_eculibre.sh ]; then
-              ./scripts/bootstrap_eculibre.sh
-            else
-              echo "bootstrap script not found, skipping"
-            fi
-
-            echo ">>> shellcheck"
-            if command -v shellcheck >/dev/null 2>&1; then
-              find scripts -maxdepth 1 -type f -perm -111 -print0 2>/dev/null | xargs -0 -r shellcheck
-            fi
-
-            echo ">>> schema validate"
-            python - <<'PY'
-import os, sys, yaml
-from jsonschema import validate
-schema_path = "schemas/metadata.schema.yaml"
-if not os.path.exists(schema_path):
-    print(f"Schema not found: {schema_path} (skip)", file=sys.stderr)
-    sys.exit(0)
-with open(schema_path, "r") as f:
-    schema = yaml.safe_load(f)
-failures = []
-for root, _, files in os.walk("rawdata"):
-    if "metadata.yml" in files:
-        p = os.path.join(root, "metadata.yml")
-        with open(p) as mf:
-            data = yaml.safe_load(mf) or {}
-        try:
-            validate(instance=data, schema=schema)
-        except Exception as e:
-            failures.append(f"{p}: {e}")
-if failures:
-    print("\n".join(failures), file=sys.stderr)
-    sys.exit(1)
-print("schema OK")
-PY
-
-            echo ">>> repo check"
-            if [ -x scripts/check_repo.sh ]; then
-              ./scripts/check_repo.sh
-            else
-              echo "check_repo.sh not found, skipping"
-            fi
-
-            echo ">>> pack snapshot"
-            zip -qr out/structure-snapshot.zip rawdata patches schemas docs || true
-          } | tee out/ci.log
+          zip -qr out/structure-snapshot.zip rawdata patches schemas docs || true
+          echo "CI done" > out/ci.log
 
       - name: Upload artifacts (always)
         if: always()
