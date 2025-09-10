@@ -1,0 +1,337 @@
+# File: .github/workflows/map-visualize.yml
+name: ECU Map Visualizer
+run-name: ECU Map Visualizer • ${{ github.event_name }} • ${{ github.ref_name }} • ${{ github.run_id }}
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+    inputs:
+      bins:
+        description: "Glob for .bin files"
+        type: string
+        default: "rawdata/**/*.bin"
+        required: false
+      specs:
+        description: "Glob for map spec files (YAML)"
+        type: string
+        default: "mapspecs/**/*.y?(a)ml"
+        required: false
+      deepseek:
+        description: "Glob for DeepSeek map JSON (optional)"
+        type: string
+        default: "deepseek/maps/**/*.json"
+        required: false
+      outdir:
+        description: "Output directory"
+        type: string
+        default: "out/mapviz"
+        required: false
+      commit_results:
+        description: "Commit figures & CSV into repo (docs/mapviz)"
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: write   # allows optional commit/push
+  actions: read
+
+jobs:
+  visualize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pyyaml jsonschema matplotlib==3.* pillow plotly
+
+      - name: Write example spec (only if none found)
+        shell: bash
+        run: |
+          shopt -s nullglob
+          FOUND=(mapspecs/*.yml mapspecs/*.yaml)
+          if [[ ${#FOUND[@]} -eq 0 ]]; then
+            mkdir -p mapspecs
+            cat > mapspecs/example_torque.yml <<'YAML'
+schema_version: "1.0"
+dataset_hint:
+  brand: "Generic"
+  model: "Example"
+  notes: "This is a sample spec; adjust offsets and shapes for your ECU."
+maps:
+  - name: "Torque_Limit"
+    offset: 0x001000  # <-- change to real offset
+    rows: 16
+    cols: 16
+    dtype: u16        # one of: u8,s8,u16,s16,u32,s32,f32
+    endian: little    # little|big
+    scale: 0.1        # multiply
+    add: 0.0          # add
+    x_axis: { start: 0, step: 250, count: 16, unit: "rpm" }
+    y_axis: { start: 0, step: 10,  count: 16, unit: "load" }
+YAML
+            echo "Wrote mapspecs/example_torque.yml"
+          fi
+
+      - name: Drop mapviz.py if missing (self-contained)
+        shell: bash
+        run: |
+          mkdir -p tools
+          if [[ ! -f tools/mapviz.py ]]; then
+            cat > tools/mapviz.py <<'PY'
+#!/usr/bin/env python3
+import argparse, json, math, os, sys, glob, pathlib
+from typing import Dict, Any, List, Tuple
+import yaml
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+DTYPES = {
+    "u8": np.uint8, "s8": np.int8,
+    "u16": np.uint16, "s16": np.int16,
+    "u32": np.uint32, "s32": np.int32,
+    "f32": np.float32,
+}
+ENDIANS = {"little": "<", "big": ">"}
+
+def to_int(x):
+    if isinstance(x, int): return x
+    if isinstance(x, str) and x.lower().startswith("0x"): return int(x, 16)
+    return int(x)
+
+def load_specs(patterns: List[str]) -> List[Dict[str, Any]]:
+    files = []
+    for pat in patterns:
+        files.extend(glob.glob(pat, recursive=True))
+    specs=[]
+    for p in files:
+        with open(p, "r", encoding="utf-8") as f:
+            specs.append(yaml.safe_load(f))
+    return specs
+
+def index_deepseek(patterns: List[str]) -> Dict[str, Dict[str, Any]]:
+    files=[]
+    for pat in patterns:
+        files.extend(glob.glob(pat, recursive=True))
+    idx={}
+    for p in files:
+        try:
+            with open(p,"r",encoding="utf-8") as f:
+                obj=json.load(f)
+            maps=[]
+            if isinstance(obj, dict) and "maps" in obj:
+                maps = obj["maps"]
+            elif isinstance(obj, dict) and ("values" in obj or "data" in obj):
+                maps = [obj]
+            elif isinstance(obj, list):
+                maps = obj
+            for m in maps:
+                name = str(m.get("name") or m.get("map") or pathlib.Path(p).stem)
+                vals = m.get("values") or m.get("data")
+                rows = m.get("rows") or m.get("height")
+                cols = m.get("cols") or m.get("width")
+                if isinstance(vals, list):
+                    arr = np.array(vals, dtype=np.float64)
+                    if rows and cols:
+                        arr = arr.reshape((int(rows), int(cols)))
+                else:
+                    continue
+                idx[name] = {"array": arr, "source": p}
+        except Exception as e:
+            print(f"[deepseek] skip {p}: {e}", file=sys.stderr)
+    return idx
+
+def mesh_axes(spec_map, rows, cols):
+    def axbuild(axspec, count):
+        if not axspec:
+            return np.arange(count, dtype=np.float64)
+        if "values" in axspec:
+            vals = np.array(axspec["values"], dtype=np.float64)
+            if len(vals) != count:
+                # pad/trim
+                if len(vals) < count:
+                    vals = np.pad(vals, (0, count-len(vals)), mode="edge")
+                else:
+                    vals = vals[:count]
+            return vals
+        start = float(axspec.get("start", 0.0))
+        step  = float(axspec.get("step", 1.0))
+        return start + step*np.arange(count, dtype=np.float64)
+    X = axbuild(spec_map.get("x_axis"), cols)
+    Y = axbuild(spec_map.get("y_axis"), rows)
+    XX, YY = np.meshgrid(X, Y)
+    return XX, YY
+
+def read_map_from_bin(bin_path, m: Dict[str,Any]) -> np.ndarray:
+    off = to_int(m["offset"])
+    rows = int(m["rows"]); cols = int(m["cols"])
+    dtype = m.get("dtype","u16"); endian=m.get("endian","little")
+    scale=float(m.get("scale",1.0)); add=float(m.get("add",0.0))
+    if dtype not in DTYPES: raise ValueError(f"Unknown dtype {dtype}")
+    if endian not in ENDIANS: raise ValueError(f"Unknown endian {endian}")
+    bsize = np.dtype(DTYPES[dtype]).itemsize
+    need = rows*cols*bsize
+    with open(bin_path, "rb") as f:
+        f.seek(off)
+        buf=f.read(need)
+        if len(buf)<need: raise ValueError(f"Not enough bytes at 0x{off:X} need {need} got {len(buf)}")
+        arr = np.frombuffer(buf, dtype=np.dtype(ENDIANS[endian]+DTYPES[dtype].name))
+        arr = arr.reshape((rows, cols)).astype(np.float64)
+        arr = arr*scale + add
+        return arr
+
+def save_csv(path, X, Y, Z):
+    # rows in Y, cols in X
+    with open(path,"w",encoding="utf-8") as f:
+        f.write("y\\x," + ",".join(map(str, X[0].tolist())) + "\n")
+        for r in range(Z.shape[0]):
+            f.write(str(Y[r,0]) + "," + ",".join(map(lambda v: f"{v:.6g}", Z[r,:])) + "\n")
+
+def plot_surfaces(outpng, title, X, Y, Zbin, Zds=None):
+    if Zds is not None and Zds.shape != Zbin.shape:
+        Zds=None
+    if Zds is None:
+        fig = plt.figure(figsize=(9,7))
+        ax = fig.add_subplot(111, projection="3d")
+        ax.plot_surface(X, Y, Zbin, cmap="viridis", linewidth=0, antialiased=True)
+        ax.set_title(title + " (BIN)")
+    else:
+        fig = plt.figure(figsize=(16,7))
+        ax1 = fig.add_subplot(121, projection="3d")
+        ax2 = fig.add_subplot(122, projection="3d")
+        ax1.plot_surface(X, Y, Zbin, cmap="viridis", linewidth=0, antialiased=True)
+        ax1.set_title(title + " (BIN)")
+        ax2.plot_surface(X, Y, Zds, cmap="plasma", linewidth=0, antialiased=True)
+        ax2.set_title(title + " (DeepSeek)")
+    for ax in fig.axes:
+        if hasattr(ax, 'set_xlabel'):
+            ax.set_xlabel("X")
+            ax.set_ylabel("Y")
+            ax.set_zlabel("Z")
+    fig.tight_layout()
+    fig.savefig(outpng, dpi=200)
+    plt.close(fig)
+
+def plot_diff(outpng, title, X, Y, Zbin, Zds):
+    D = Zds - Zbin
+    fig = plt.figure(figsize=(8,7))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot_surface(X, Y, D, cmap="coolwarm", linewidth=0, antialiased=True)
+    ax.set_title(title + " (DeepSeek - BIN)")
+    ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("ΔZ")
+    fig.tight_layout(); fig.savefig(outpng, dpi=200); plt.close(fig)
+
+def main():
+    ap = argparse.ArgumentParser(description="ECU map visualizer (BIN vs DeepSeek JSON)")
+    ap.add_argument("--bins", default="rawdata/**/*.bin")
+    ap.add_argument("--specs", default="mapspecs/**/*.y?(a)ml")
+    ap.add_argument("--deepseek", default="deepseek/maps/**/*.json")
+    ap.add_argument("--outdir", default="out/mapviz")
+    args = ap.parse_args()
+
+    bin_paths = glob.glob(args.bins, recursive=True)
+    spec_objs = load_specs([args.specs])
+    ds_index = index_deepseek([args.deepseek])
+
+    if not bin_paths:
+        print(f"No .bin files matched: {args.bins}", file=sys.stderr)
+    pathlib.Path(args.outdir).mkdir(parents=True, exist_ok=True)
+
+    # Collect maps from all spec files
+    all_maps=[]
+    for spec in spec_objs:
+        for m in spec.get("maps", []):
+            all_maps.append(m)
+
+    # Summary markdown
+    summary_lines = ["# Map Visualization Summary\n"]
+
+    for bin_path in bin_paths:
+        base = pathlib.Path(bin_path).name
+        outbase = pathlib.Path(args.outdir) / pathlib.Path(base).with_suffix("")
+        outbase.mkdir(parents=True, exist_ok=True)
+        for m in all_maps:
+            name = str(m["name"])
+            try:
+                Zbin = read_map_from_bin(bin_path, m)
+            except Exception as e:
+                print(f"[WARN] {base}:{name}: {e}", file=sys.stderr)
+                continue
+            rows, cols = Zbin.shape
+            X, Y = mesh_axes(m, rows, cols)
+
+            Zds = None
+            if name in ds_index:
+                Zcand = ds_index[name]["array"]
+                try:
+                    Zds = Zcand.astype(float)
+                except Exception:
+                    Zds = None
+
+            safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
+            png = outbase / f"{safe_name}.png"
+            plot_surfaces(str(png), f"{name}", X, Y, Zbin, Zds)
+
+            csvp = outbase / f"{safe_name}.csv"
+            save_csv(str(csvp), X, Y, Zbin)
+
+            if Zds is not None and Zds.shape == Zbin.shape:
+                dpng = outbase / f"{safe_name}.diff.png"
+                plot_diff(str(dpng), f"{name}", X, Y, Zbin, Zds)
+
+            summary_lines.append(f"- **{base} / {name}** → `{png}`" + (" (with DeepSeek)" if Zds is not None else ""))
+
+    with open(os.path.join(args.outdir, "SUMMARY.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(summary_lines) + "\n")
+
+if __name__ == "__main__":
+    main()
+PY
+            chmod +x tools/mapviz.py
+          fi
+
+      - name: Run visualizer
+        env:
+          BINS: ${{ inputs.bins || 'rawdata/**/*.bin' }}
+          SPECS: ${{ inputs.specs || 'mapspecs/**/*.y?(a)ml' }}
+          DEEPSEEK: ${{ inputs.deepseek || 'deepseek/maps/**/*.json' }}
+          OUTDIR: ${{ inputs.outdir || 'out/mapviz' }}
+        run: |
+          python tools/mapviz.py \
+            --bins    "${BINS}" \
+            --specs   "${SPECS}" \
+            --deepseek "${DEEPSEEK}" \
+            --outdir  "${OUTDIR}"
+
+      - name: Upload figures & CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: mapviz-output
+          path: |
+            ${{ inputs.outdir || 'out/mapviz' }}/**
+
+      - name: Optionally commit results to docs/mapviz
+        if: ${{ inputs.commit_results }}
+        run: |
+          mkdir -p docs/mapviz
+          rsync -a ${{ inputs.outdir || 'out/mapviz' }}/ docs/mapviz/
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/mapviz
+          git commit -m "docs(mapviz): update figures & CSV [skip ci]" || echo "Nothing to commit"
+          git push
