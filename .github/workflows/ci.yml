@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # wichtig fürs Pushen mit GITHUB_TOKEN
+
+jobs:
+  validate-build-and-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (full history, keep credentials)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Print context (debug)
+        run: |
+          echo "GITHUB_REF=${GITHUB_REF}"
+          echo "GITHUB_REF_NAME=${GITHUB_REF_NAME}"
+          git --version
+          git rev-parse --abbrev-ref HEAD || true
+          git status || true
+          git remote -v || true
+
+      - name: Set up Python + tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          python3 -V || true
+          pip3 install --user pyyaml jsonschema || true
+
+      - name: Run bootstrap / validation with error log
+        id: build
+        run: |
+          set -Eeuo pipefail
+          mkdir -p out
+          # Catch errors and preserve log
+          trap 'rc=$?; echo "::error::bootstrap/validate failed (exit $rc)"; cp -f /tmp/ci.log out/error.log || true; exit $rc' ERR
+
+          {
+            echo ">>> bootstrap"
+            chmod +x scripts/bootstrap_eculibre.sh || true
+            ./scripts/bootstrap_eculibre.sh 2>&1
+
+            echo ">>> shellcheck"
+            find scripts -maxdepth 1 -type f -perm -111 -print0 2>/dev/null | xargs -0 -r shellcheck
+
+            echo ">>> schema validate"
+            python3 - << "PY" 2>&1
+import os,sys,yaml
+from jsonschema import validate, exceptions
+with open("schemas/metadata.schema.yaml") as f:
+    schema=yaml.safe_load(f)
+failed=[]
+for root,_,files in os.walk("rawdata"):
+    if "metadata.yml" in files:
+        p=os.path.join(root,"metadata.yml")
+        with open(p) as mf: data=yaml.safe_load(mf)
+        try:
+            validate(data, schema)
+        except Exception as e:
+            failed.append(f"{p}: {e}")
+if failed:
+    print("\n".join(failed), file=sys.stderr)
+    sys.exit(1)
+print("schema OK")
+PY
+
+            echo ">>> repo check"
+            chmod +x scripts/check_repo.sh
+            ./scripts/check_repo.sh 2>&1
+
+            echo ">>> pack snapshot"
+            mkdir -p out
+            zip -qr out/structure-snapshot.zip rawdata patches schemas docs || true
+          } | tee /tmp/ci.log
+
+      - name: Upload artifacts (always)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-artifacts
+          path: out
+
+      # --- Commit & push changes (only on push to same repo; skip PRs from forks) ---
+      - name: Prepare Git for push
+        if: github.event_name == 'push' && github.repository_owner == github.actor
+        run: |
+          set -euo pipefail
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          # Checkout den richtigen Branch (kein detached HEAD)
+          git checkout "${GITHUB_REF_NAME}"
+
+          # Nur committen, wenn es tatsächlich Änderungen gibt
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "ci: update generated files [skip ci]"
+          # Verhindere non-fast-forward durch vorheriges fetch
+          git fetch origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      # --- Fallback: PR aufmachen, wenn Push nicht erlaubt (Forks / Protections) ---
+      - name: Create PR with changes
+        if: (github.event_name == 'pull_request') || (github.repository_owner != github.actor)
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "ci: update generated files"
+          title: "CI: Update generated files"
+          body: "Automated update from CI."
+          branch: "ci/update-generated-${{ github.run_id }}"
+          base: ${{ github.ref_name }}
