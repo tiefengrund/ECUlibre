@@ -1,19 +1,62 @@
+# File: .github/workflows/analyze.yml
 name: ECU Analysis
-run-name: >
-  ECU Analysis • ${% raw %}{{ github.event_name }}{{ github.ref_name }}{{ github.run_id }}{% endraw %}
+run-name: ECU Analysis • ${{ github.event_name }} • ${{ github.ref_name }} • ${{ github.run_id }}
 
 on:
   push:
-    branches: [ main ]
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
 jobs:
-  repo-checks:
-    name: Repo Checks (in dev container)
+  build-dev-image:
+    name: Build dev container (pre-hook)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      owner_lc: ${{ steps.meta.outputs.owner_lc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag (lowercase owner)
+        id: meta
+        shell: bash
+        run: |
+          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "owner_lc=${OWNER_LC}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${OWNER_LC}/eculibre/dev:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & Push dev image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ghcr.io/${{ steps.meta.outputs.owner_lc }}/eculibre/dev:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  repo-checks:
+    name: Repo Checks (dev container)
+    needs: build-dev-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     container:
-      image: ghcr.io/tiefengrund/eculibre/dev:latest
+      image: ${{ needs.build-dev-image.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -27,15 +70,17 @@ jobs:
 
       - name: Lint scripts
         run: |
+          # shellcheck is in the dev image; if not, this still won't fail the job
           find scripts -type f -maxdepth 1 -perm -111 -print0 2>/dev/null | xargs -0 -r shellcheck || true
+          test -x ./eculibre.sh && shellcheck ./eculibre.sh || true
 
       - name: Structure check (strict)
         run: ./eculibre.sh check --strict
 
   codeql:
-    name: CodeQL (hosted runner)
-    runs-on: ubuntu-latest
+    name: CodeQL
     needs: repo-checks
+    runs-on: ubuntu-latest
     permissions:
       security-events: write
       contents: read
