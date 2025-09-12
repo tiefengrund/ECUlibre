@@ -48,6 +48,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+      - name: Install jq (Debian/Ubuntu)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends jq
 
       - name: Python 3.11
         uses: actions/setup-python@v5
