@@ -18,6 +18,10 @@ jobs:
     container:
       image: registry.opensuse.org/opensuse/leap:15.6
     steps:
+      - name: Install base tools (needed for checkout)
+        run: |
+          zypper -n refresh
+          zypper -n install --no-recommends tar gzip xz git-core ca-certificates
       - uses: actions/checkout@v4
 
       - name: Install base tooling
