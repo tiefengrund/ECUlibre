@@ -87,6 +87,21 @@ jobs:
           if ! command -v git >/dev/null 2>&1; then
             apt-get update && apt-get install -y --no-install-recommends git ca-certificates
           fi
+      - name: Debug inputs & matches
+        run: |
+          set -e
+          echo "PWD=$(pwd)"
+          echo "BINS=${BINS}"
+          echo "SPECS=${SPECS}"
+          echo "DEEPSEEK=${DEEPSEEK}"
+          echo "OUTDIR=${OUTDIR}"
+          echo "Mapviz script present? $(test -f tools/mapviz.py && echo yes || echo no)"
+          echo "Matched BIN files:"
+          python - <<'PY'
+          import os, glob, json
+          bins = os.environ.get("BINS","")
+          print("\n".join(sorted(glob.glob(bins, recursive=True))) or "(none)")
+          PY
 
       - name: Resolve inputs
         shell: bash
