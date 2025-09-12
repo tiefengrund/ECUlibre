@@ -81,14 +81,14 @@ jobs:
             echo "COMMIT=${COMMIT}"
           } >> "$GITHUB_ENV"
 
-      - name: Beispiel-Mapspezifikation anlegen (falls keine vorhanden)
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          FOUND=(mapspecs/*.yml mapspecs/*.yaml)
-          if [[ ${#FOUND[@]} -eq 0 ]]; then
-            python - <<'PY'
+- name: Beispiel-Mapspezifikation anlegen (falls keine vorhanden)
+  shell: bash
+  run: |
+    set -euo pipefail
+    shopt -s nullglob
+    FOUND=(mapspecs/*.yml mapspecs/*.yaml)
+    if [[ ${#FOUND[@]} -eq 0 ]]; then
+      python - <<'PY'
 import os, yaml
 os.makedirs("mapspecs", exist_ok=True)
 doc = {
@@ -105,8 +105,8 @@ with open("mapspecs/example_torque.yml","w",encoding="utf-8") as f:
   yaml.safe_dump(doc, f, sort_keys=False)
 print("Wrote mapspecs/example_torque.yml")
 PY
-          fi
-
+    fi
+    
       - name: mapviz.py (self-contained Reporter & Visualizer)
         shell: bash
         run: |
