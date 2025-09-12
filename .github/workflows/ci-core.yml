@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: read        # pull from GHCR
+      packages: write        # pull from GHCR
     container:
       image: ghcr.io/tiefengrund/eculibre/dev:latest
       credentials:
