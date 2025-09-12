@@ -11,16 +11,15 @@ permissions:
   contents: read
   packages: write
 
-# IMAGE überall in Steps nutzbar (nicht im container.image)
+# Für Steps nutzbar:
 env:
-  IMAGE: ${{ format('ghcr.io/{0}/eculibre/dev', toLower(github.repository_owner)) }}
+  IMAGE: ${{ format('ghcr.io/{0}/eculibre/dev', github.repository_owner) }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
@@ -50,15 +49,10 @@ jobs:
       contents: read
       packages: read
     container:
-      # WICHTIG: hier KEIN env.*, sondern direkt github-Kontext verwenden
-      image: ${{ format('ghcr.io/{0}/eculibre/dev:latest', toLower(github.repository_owner)) }}
-      # optional:
-      # credentials:
-      #   username: ${{ github.actor }}
-      #   password: ${{ secrets.GITHUB_TOKEN }}
+      # Hier KEIN env.* erlaubt; nimm den Ausdruck direkt:
+      image: ${{ format('ghcr.io/{0}/eculibre/dev:latest', github.repository_owner) }}
     steps:
       - uses: actions/checkout@v4
-
       - name: Mark repo as safe (fix "dubious ownership")
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
