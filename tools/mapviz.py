@@ -198,13 +198,23 @@ def surface_pair(outpng, title, X, Y, Zbin, Zds=None):
         ax.set_xlabel("Engine Speed [rpm]")
         ax.set_ylabel("Inlet Manifold Pressure [kPa]")
         ax.set_zlabel("[%]")
-        for pane in [ax.w_xaxis, ax.w_yaxis, ax.w_zaxis]:
+        try:
+            for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+                axis.pane.set_facecolor((0, 0, 0, 0.0))
+                axis.pane.set_edgecolor((1, 1, 1, 0.12))
+        except Exception:
+            # Fallback für sehr alte Matplotlib-Versionen (falls benötigt)
             try:
-                pane.set_pane_color((0,0,0,0.0))
+                for pane in (ax.w_xaxis, ax.w_yaxis, ax.w_zaxis):
+                    pane.set_pane_color((0, 0, 0, 0.0))
             except Exception:
                 pass
-        ax.grid(True, linestyle=":", alpha=0.5)
-        return surf
+        # optional: etwas kompaktere Box in Z
+        try:
+            ax.set_box_aspect((1, 1, 0.6))
+        except Exception:
+            pass
+        
 
     if Zds is None:
         fig = plt.figure(figsize=(11,8), facecolor="#000")
