@@ -102,19 +102,27 @@ jobs:
           echo "DEEPSEEK=$DEEPSEEK" >> "$GITHUB_ENV"
           echo "OUTDIR=$OUTBASE/${{ matrix.outdir_suffix }}" >> "$GITHUB_ENV"
           echo "COMMIT=$COMMIT"   >> "$GITHUB_ENV"
-            - name: Ensure example spec (idempotent, no heredoc)
-              run: |
-                 python -c 'import os,yaml;os.makedirs("mapspecs",exist_ok=True);h=[f for f in os.listdir("mapspecs") if f.endswith((".yml",".yaml"))]; 
-                 import sys; 
-                 (lambda: (open("mapspecs/example_torque.yml","w",encoding="utf-8").write(
-                   yaml.safe_dump({"schema_version":"1.0","dataset_hint":{"brand":"Generic","model":"Example","notes":"Sample"},
-                   "maps":[{"name":"Torque_Limit","offset":"0x001000","rows":16,"cols":16,"dtype":"u16","endian":"little","scale":0.1,"add":0.0,
-                   "x_axis":{"start":0,"step":250,"count":16,"unit":"rpm"},"y_axis":{"start":0,"step":10,"count":16,"unit":"load"}}]},sort_keys=False)
-                 ),print("Wrote mapspecs/example_torque.yml")))() if not h else None'
 
 #      - name: Guard: script exists
 #        run: test -f "${{ matrix.script }}" || { echo "Missing ${{ matrix.script }} – ins Repo oder ins Image legen"; exit 1; }
-        
+#      - uses: actions/upload-artifact@v4
+#        with:
+#          name: ${{ matrix.kind }}-output
+#          path: ${{ env.OUTDIR }}
+#          if-no-files-found: ignore
+#      
+#      - name: Optional commit to docs
+#        if: ${{ env.COMMIT == 'true' }}
+#        run: |
+#          set -euo pipefail
+#          git config user.name  "github-actions[bot]"
+#          git config user.email "github-actions[bot]@users.noreply.github.com"
+#          mkdir -p "${{ matrix.docs_dir }}"
+#          rsync -a "${OUTDIR}/" "${{ matrix.docs_dir }}/"
+#          git add "${{ matrix.docs_dir }}"
+#          git commit -m "docs(${{ matrix.kind }}): update (auto)" || echo "Nothing to commit"
+#          git push  
+
       - name: Run ${{ matrix.kind }}
         run: |
           set -euo pipefail
