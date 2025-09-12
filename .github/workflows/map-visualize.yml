@@ -50,7 +50,7 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install deps
+      - name: Install Python deps
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
@@ -73,11 +73,8 @@ jobs:
             OUTDIR="out/mapviz"
             COMMIT="false"
           fi
-          echo "BINS=$BINS"       >> "$GITHUB_ENV"
-          echo "SPECS=$SPECS"     >> "$GITHUB_ENV"
-          echo "DEEPSEEK=$DEEPSEEK" >> "$GITHUB_ENV"
-          echo "OUTDIR=$OUTDIR"   >> "$GITHUB_ENV"
-          echo "COMMIT=$COMMIT"   >> "$GITHUB_ENV"
+          printf 'BINS=%s\nSPECS=%s\nDEEPSEEK=%s\nOUTDIR=%s\nCOMMIT=%s\n' \
+            "$BINS" "$SPECS" "$DEEPSEEK" "$OUTDIR" "$COMMIT" >> "$GITHUB_ENV"
 
       - name: Beispiel-Mapspezifikation anlegen (falls keine vorhanden)
         shell: bash
@@ -86,26 +83,23 @@ jobs:
           shopt -s nullglob
           FOUND=(mapspecs/*.yml mapspecs/*.yaml)
           if [[ ${#FOUND[@]} -eq 0 ]]; then
-            mkdir -p mapspecs
-            cat > mapspecs/example_torque.yml <<'YAML'
-schema_version: "1.0"
-dataset_hint:
-  brand: "Generic"
-  model: "Example"
-  notes: "Sample spec; set real offsets/sizes for your ECU."
-maps:
-  - name: "Torque_Limit"
-    offset: 0x001000
-    rows: 16
-    cols: 16
-    dtype: u16
-    endian: little
-    scale: 0.1
-    add: 0.0
-    x_axis: { start: 0, step: 250, count: 16, unit: "rpm" }
-    y_axis: { start: 0, step: 10,  count: 16, unit: "load" }
-YAML
-            echo "Wrote mapspecs/example_torque.yml"
+            python - <<'PY'
+import os, yaml
+os.makedirs("mapspecs", exist_ok=True)
+doc = {
+  "schema_version": "1.0",
+  "dataset_hint": {"brand":"Generic","model":"Example","notes":"Sample spec; set real offsets/sizes for your ECU."},
+  "maps": [{
+    "name":"Torque_Limit","offset":"0x001000","rows":16,"cols":16,
+    "dtype":"u16","endian":"little","scale":0.1,"add":0.0,
+    "x_axis":{"start":0,"step":250,"count":16,"unit":"rpm"},
+    "y_axis":{"start":0,"step":10,"count":16,"unit":"load"}
+  }]
+}
+with open("mapspecs/example_torque.yml","w",encoding="utf-8") as f:
+  yaml.safe_dump(doc, f, sort_keys=False)
+print("Wrote mapspecs/example_torque.yml")
+PY
           fi
 
       - name: mapviz.py (self-contained Reporter & Visualizer)
@@ -115,7 +109,361 @@ YAML
           mkdir -p tools
           cat > tools/mapviz.py <<'PY'
 #!/usr/bin/env python3
-# (dein bestehendes Python-Skript – unverändert)
+import argparse, json, os, sys, glob, hashlib, math, pathlib, re
+from typing import Dict, Any, List
+import numpy as np
+import yaml
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+DTYPES = {"u8": np.uint8, "s8": np.int8, "u16": np.uint16, "s16": np.int16,
+          "u32": np.uint32, "s32": np.int32, "f32": np.float32}
+ENDIANS = {"little": "<", "big": ">"}
+
+def to_int(x):
+    if isinstance(x, int): return x
+    if isinstance(x, str) and x.lower().startswith("0x"): return int(x, 16)
+    return int(x)
+
+def sha256_path(p):
+    h=hashlib.sha256()
+    with open(p,"rb") as f:
+        for chunk in iter(lambda: f.read(1<<20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def shannon_entropy(data: bytes) -> float:
+    if not data: return 0.0
+    from collections import Counter
+    c = Counter(data); n = len(data)
+    return -sum((cnt/n)*math.log2(cnt/n) for cnt in c.values())
+
+def find_strings(data: bytes, minlen=6, limit=40):
+    out=[]; cur=[]
+    for b in data:
+        if 32 <= b <= 126: cur.append(chr(b))
+        else:
+            if len(cur) >= minlen:
+                out.append("".join(cur))
+                if len(out) >= limit: break
+            cur=[]
+    if len(cur) >= minlen and len(out) < limit: out.append("".join(cur))
+    return out
+
+def byte_histogram(data: bytes, png: str):
+    arr = np.frombuffer(data, dtype=np.uint8)
+    hist, _ = np.histogram(arr, bins=256, range=(0,256))
+    fig = plt.figure(figsize=(10,4)); ax = fig.add_subplot(111)
+    ax.bar(np.arange(256), hist, width=1.0)
+    ax.set_title("Byte histogram"); ax.set_xlabel("byte"); ax.set_ylabel("count")
+    fig.tight_layout(); fig.savefig(png, dpi=150); plt.close(fig)
+
+def load_specs(patterns: List[str]) -> List[Dict[str, Any]]:
+    files=[]
+    for pat in patterns: files.extend(glob.glob(pat, recursive=True))
+    specs=[]
+    for p in files:
+        try:
+            with open(p,"r",encoding="utf-8") as f:
+                specs.append(yaml.safe_load(f))
+        except Exception as e:
+            print(f"[spec] skip {p}: {e}", file=sys.stderr)
+    return specs
+
+def index_deepseek(patterns: List[str]) -> Dict[str, Dict[str, Any]]:
+    files=[]
+    for pat in patterns: files.extend(glob.glob(pat, recursive=True))
+    idx={}
+    for p in files:
+        try:
+            with open(p,"r",encoding="utf-8") as f:
+                obj=json.load(f)
+            maps=[]
+            if isinstance(obj, dict) and "maps" in obj:
+                maps = obj["maps"]
+            elif isinstance(obj, dict) and ("values" in obj or "data" in obj):
+                maps = [obj]
+            elif isinstance(obj, list):
+                maps = obj
+            for m in maps:
+                name = str(m.get("name") or m.get("map") or pathlib.Path(p).stem)
+                vals = m.get("values") or m.get("data")
+                rows = m.get("rows") or m.get("height")
+                cols = m.get("cols") or m.get("width")
+                if vals is None: continue
+                arr = np.array(vals, dtype=np.float64)
+                if rows and cols:
+                    try: arr = arr.reshape((int(rows), int(cols)))
+                    except Exception: pass
+                idx[name] = {"array": arr, "source": p}
+        except Exception as e:
+            print(f"[deepseek] skip {p}: {e}", file=sys.stderr)
+    return idx
+
+def mesh_axes(spec_map, rows, cols):
+    def axbuild(axspec, count):
+        if not axspec: return np.arange(count, dtype=np.float64)
+        if "values" in axspec:
+            vals = np.array(axspec["values"], dtype=np.float64)
+            if len(vals) != count: vals = np.resize(vals, (count,))
+            return vals
+        start = float(axspec.get("start", 0.0))
+        step  = float(axspec.get("step", 1.0))
+        return start + step*np.arange(count, dtype=np.float64)
+    X = axbuild(spec_map.get("x_axis"), cols)
+    Y = axbuild(spec_map.get("y_axis"), rows)
+    XX, YY = np.meshgrid(X, Y)
+    return XX, YY
+
+def read_map_from_bin(bin_path, m: Dict[str,Any]) -> np.ndarray:
+    off = to_int(m["offset"])
+    rows = int(m["rows"]); cols = int(m["cols"])
+    dtype = m.get("dtype","u16"); endian=m.get("endian","little")
+    scale=float(m.get("scale",1.0)); add=float(m.get("add",0.0))
+    if dtype not in DTYPES: raise ValueError(f"Unknown dtype {dtype}")
+    if endian not in ENDIANS: raise ValueError(f"Unknown endian {endian}")
+    bsize = np.dtype(DTYPES[dtype]).itemsize
+    need = rows*cols*bsize
+    with open(bin_path, "rb") as f:
+        f.seek(off)
+        buf=f.read(need)
+        if len(buf)<need: raise ValueError(f"Not enough bytes at 0x{off:X} need {need} got {len(buf)}")
+        arr = np.frombuffer(buf, dtype=np.dtype(ENDIANS[endian]+DTYPES[dtype].name))
+        arr = arr.reshape((rows, cols)).astype(np.float64)
+        arr = arr*scale + add
+        return arr
+
+def save_csv(path, X, Y, Z):
+    with open(path,"w",encoding="utf-8") as f:
+        f.write("y\\x," + ",".join(map(str, X[0].tolist())) + "\n")
+        for r in range(Z.shape[0]):
+            f.write(str(Y[r,0]) + "," + ",".join(map(lambda v: f\"{v:.6g}\", Z[r,:])) + "\n")
+
+def surface_pair(outpng, title, X, Y, Zbin, Zds=None):
+    if Zds is not None and Zds.shape != Zbin.shape:
+        Zds=None
+    if Zds is None:
+        fig = plt.figure(figsize=(9,7))
+        ax = fig.add_subplot(111, projection="3d")
+        ax.plot_surface(X, Y, Zbin, cmap="viridis", linewidth=0, antialiased=True)
+        ax.set_title(title + " (BIN)")
+    else:
+        fig = plt.figure(figsize=(16,7))
+        ax1 = fig.add_subplot(121, projection="3d")
+        ax2 = fig.add_subplot(122, projection="3d")
+        ax1.plot_surface(X, Y, Zbin, cmap="viridis", linewidth=0, antialiased=True)
+        ax1.set_title(title + " (BIN)")
+        ax2.plot_surface(X, Y, Zds, cmap="plasma", linewidth=0, antialiased=True)
+        ax2.set_title(title + " (DeepSeek)")
+    for ax in fig.axes:
+        try:
+            ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
+        except Exception:
+            pass
+    fig.tight_layout(); fig.savefig(outpng, dpi=200); plt.close(fig)
+
+def surface_diff(outpng, title, X, Y, Zbin, Zds):
+    D = Zds - Zbin
+    fig = plt.figure(figsize=(8,7))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot_surface(X, Y, D, cmap="coolwarm", linewidth=0, antialiased=True)
+    ax.set_title(title + " (DeepSeek - BIN)")
+    ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("ΔZ")
+    fig.tight_layout(); fig.savefig(outpng, dpi=200); plt.close(fig)
+
+def read_metadata_for_bin(bin_path: str) -> Dict[str,str]:
+    p = pathlib.Path(bin_path).resolve()
+    for parent in [p.parent] + list(p.parents):
+        cand = parent / "metadata.yml"
+        if cand.exists():
+            try:
+                with open(cand,"r",encoding="utf-8") as f:
+                    y = yaml.safe_load(f) or {}
+                keep = {k:str(v) for k,v in y.items() if k in ("brand","model","generation","ecu_vendor","ecu_model","firmware","region","schema_version")}
+                return keep
+            except Exception:
+                pass
+    return {}
+
+def analyze_bin(bin_path: str, outdir: str):
+    dat = pathlib.Path(bin_path).read_bytes()
+    info = {
+        "path": str(bin_path),
+        "size_bytes": len(dat),
+        "sha256": sha256_path(bin_path),
+        "entropy_bits_per_byte": round(shannon_entropy(dat), 4),
+        "pct_zero": round(100.0*dat.count(0)/max(1,len(dat)), 3),
+    }
+    png_hist = os.path.join(outdir, "histogram.png")
+    byte_histogram(dat, png_hist)
+    strings = find_strings(dat, minlen=6, limit=40)
+    return info, strings, os.path.relpath(png_hist)
+
+def mesh_axes(spec_map, rows, cols):
+    def axbuild(axspec, count):
+        if not axspec: return np.arange(count, dtype=np.float64)
+        if "values" in axspec:
+            vals = np.array(axspec["values"], dtype=np.float64)
+            if len(vals) != count:
+                vals = np.resize(vals, (count,))
+            return vals
+        start = float(axspec.get("start", 0.0))
+        step  = float(axspec.get("step", 1.0))
+        return start + step*np.arange(count, dtype=np.float64)
+    X = axbuild(spec_map.get("x_axis"), cols)
+    Y = axbuild(spec_map.get("y_axis"), rows)
+    return np.meshgrid(X, Y)
+
+def render_report(bin_path: str, out_dir: str, maps: List[Dict[str,Any]], ds_idx: Dict[str,Dict[str,Any]]):
+    os.makedirs(out_dir, exist_ok=True)
+    info, strings, hist_rel = analyze_bin(bin_path, out_dir)
+
+    md = []
+    md.append(f"# Report for `{os.path.basename(bin_path)}`")
+    md.append("")
+    md.append("## File Info")
+    md.append("")
+    meta = read_metadata_for_bin(bin_path)
+    if meta:
+        md.append("**Metadata (from metadata.yml):**  " + ", ".join([f"{k}={v}" for k,v in meta.items()]))
+    md.append(f"- Path: `{info['path']}`")
+    md.append(f"- Size: `{info['size_bytes']}` bytes")
+    md.append(f"- SHA256: `{info['sha256']}`")
+    md.append(f"- Shannon entropy: `{info['entropy_bits_per_byte']}` bits/byte")
+    md.append(f"- Zero bytes: `{info['pct_zero']}%`")
+    md.append("")
+    md.append("### Byte histogram")
+    md.append(f"![histogram]({hist_rel})")
+    md.append("")
+
+    if strings:
+        md.append("### Top printable strings (first 40)")
+        for s in strings:
+            s = s.replace("|","\\|")
+            md.append(f"- `{s}`")
+        md.append("")
+
+    if not maps:
+        md.append("> No maps found from specs.")
+    else:
+        md.append("## Maps")
+        for m in maps:
+            name = str(m.get("name","<unnamed>"))
+            safe = re.sub(r'[^a-zA-Z0-9_.-]+', '_', name)
+            try:
+                Zbin = read_map_from_bin(bin_path, m)
+            except Exception as e:
+                md.append(f"### {name}\n- ⚠️ {e}\n")
+                continue
+            rows, cols = Zbin.shape
+
+            # axes
+            def axbuild(axspec, count):
+                if not axspec: return np.arange(count, dtype=np.float64)
+                if "values" in axspec:
+                    vals = np.array(axspec["values"], dtype=np.float64)
+                    if len(vals) != count: vals = np.resize(vals, (count,))
+                    return vals
+                start = float(axspec.get("start", 0.0))
+                step  = float(axspec.get("step", 1.0))
+                return start + step*np.arange(count, dtype=np.float64)
+            X = axbuild(m.get("x_axis"), cols)
+            Y = axbuild(m.get("y_axis"), rows)
+            XX, YY = np.meshgrid(X, Y)
+
+            Zds = None
+            if name in ds_idx:
+                try:
+                    ZdsCand = np.array(ds_idx[name]["array"], dtype=float)
+                    if ZdsCand.shape == Zbin.shape:
+                        Zds = ZdsCand
+                except Exception:
+                    Zds = None
+
+            png_pair = os.path.join(out_dir, f"{safe}.pair.png")
+            fig = plt.figure(figsize=(16,7)) if Zds is not None else plt.figure(figsize=(9,7))
+            if Zds is None:
+                ax = fig.add_subplot(111, projection="3d")
+                ax.plot_surface(XX, YY, Zbin, cmap="viridis", linewidth=0, antialiased=True)
+                ax.set_title(name + " (BIN)")
+            else:
+                ax1 = fig.add_subplot(121, projection="3d")
+                ax2 = fig.add_subplot(122, projection="3d")
+                ax1.plot_surface(XX, YY, Zbin, cmap="viridis", linewidth=0, antialiased=True)
+                ax1.set_title(name + " (BIN)")
+                ax2.plot_surface(XX, YY, Zds, cmap="plasma", linewidth=0, antialiased=True)
+                ax2.set_title(name + " (DeepSeek)")
+            for ax in fig.axes:
+                try: ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
+                except Exception: pass
+            fig.tight_layout(); fig.savefig(png_pair, dpi=200); plt.close(fig)
+
+            csv_path = os.path.join(out_dir, f"{safe}.csv")
+            with open(csv_path, "w", encoding="utf-8") as f:
+                f.write("y\\x," + ",".join(map(str, XX[0].tolist())) + "\n")
+                for r in range(Zbin.shape[0]):
+                    f.write(str(YY[r,0]) + "," + ",".join(f"{v:.6g}" for v in Zbin[r,:]) + "\n")
+
+            md.append(f"### {name}")
+            md.append("")
+            md.append(f"**Offset:** `0x{to_int(m['offset']):X}`, **shape:** `{rows}×{cols}`, **dtype:** `{m.get('dtype','u16')}`, **endian:** `{m.get('endian','little')}`  ")
+            md.append(f"[CSV]({os.path.relpath(csv_path)})  ")
+            md.append(f"![{name}]({os.path.relpath(png_pair)})")
+            md.append("")
+
+            if Zds is not None:
+                png_diff = os.path.join(out_dir, f"{safe}.diff.png")
+                D = Zds - Zbin
+                fig = plt.figure(figsize=(8,7)); ax = fig.add_subplot(111, projection="3d")
+                ax.plot_surface(XX, YY, D, cmap="coolwarm", linewidth=0, antialiased=True)
+                ax.set_title(name + " (DeepSeek - BIN)")
+                ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("ΔZ")
+                fig.tight_layout(); fig.savefig(png_diff, dpi=200); plt.close(fig)
+                md.append(f"**Diff (DeepSeek − BIN):**")
+                md.append(f"![{name} diff]({os.path.relpath(png_diff)})")
+                md.append("")
+
+    rep = os.path.join(out_dir, "REPORT.md")
+    with open(rep, "w", encoding="utf-8") as f:
+        f.write("\n".join(md) + "\n")
+    return rep
+
+def main():
+    ap = argparse.ArgumentParser(description="ECU map visualizer: for EACH .bin under rawdata, build a Markdown report with 3D maps and DeepSeek overlay.")
+    ap.add_argument("--bins", default="rawdata/**/*.bin")
+    ap.add_argument("--specs", default="mapspecs/**/*.y?(a)ml")
+    ap.add_argument("--deepseek", default="deepseek/maps/**/*.json")
+    ap.add_argument("--outdir", default="out/mapviz")
+    args = ap.parse_args()
+
+    bin_paths = glob.glob(args.bins, recursive=True)
+    spec_objs = load_specs([args.specs])
+    ds_index = index_deepseek([args.deepseek])
+
+    all_maps=[]
+    for spec in spec_objs:
+        for m in (spec.get("maps") or []):
+            all_maps.append(m)
+
+    pathlib.Path(args.outdir).mkdir(parents=True, exist_ok=True)
+
+    index_lines = ["# Map Visualization Index", ""]
+    if not bin_paths:
+        print(f"[INFO] no .bin matched: {args.bins}", file=sys.stderr)
+
+    for binp in bin_paths:
+        base = pathlib.Path(binp).name
+        dst = pathlib.Path(args.outdir) / pathlib.Path(base).with_suffix("")
+        dst.mkdir(parents=True, exist_ok=True)
+        rep = render_report(binp, str(dst), all_maps, ds_index)
+        index_lines.append(f"- [{base}]({os.path.relpath(rep, args.outdir)})")
+
+    with open(os.path.join(args.outdir, "INDEX.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(index_lines) + "\n")
+
+if __name__ == "__main__":
+    main()
 PY
           chmod +x tools/mapviz.py
 
@@ -139,7 +487,8 @@ PY
         run: |
           set -euo pipefail
           mkdir -p docs/mapviz
-          rsync -a "${OUTDIR}/" docs/mapviz/
+          # vermeidet rsync-Abhängigkeit:
+          cp -a "${OUTDIR}/." "docs/mapviz/"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/mapviz
