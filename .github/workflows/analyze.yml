@@ -89,7 +89,7 @@ jobs:
           FOUND=(mapspecs/*.yml mapspecs/*.yaml)
           if [[ ${#FOUND[@]} -eq 0 ]]; then
             python - <<'PY'
-import os, yaml
+import: os, yaml
 os.makedirs("mapspecs", exist_ok=True)
 doc = {
   "schema_version": "1.0",
@@ -128,7 +128,7 @@ DTYPES = {"u8": np.uint8, "s8": np.int8, "u16": np.uint16, "s16": np.int16,
           "u32": np.uint32, "s32": np.int32, "f32": np.float32}
 ENDIANS = {"little": "<", "big": ">"}
 
-def to_int(x): 
+def to_int(x):
     return int(x,16) if isinstance(x,str) and x.lower().startswith("0x") else int(x)
 
 def sha256_path(p):
