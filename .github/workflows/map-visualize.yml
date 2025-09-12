@@ -1,4 +1,3 @@
-# File: .github/workflows/map-visualize.yml
 name: ECU Map Visualizer
 run-name: ECU Map Visualizer • ${{ github.event_name }} • ${{ github.ref_name }} • ${{ github.run_id }}
 
