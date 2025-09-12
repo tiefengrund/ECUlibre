@@ -33,6 +33,9 @@ def apply_dark_theme():
         "font.size":        10,
     })
 
+ap.add_argument("--autodiscover", action="store_true",
+                help="scan BIN for likely 2D tables (no specs needed)")
+
 def to_int(x): 
     return int(x,16) if isinstance(x,str) and x.lower().startswith("0x") else int(x)
 
@@ -47,6 +50,39 @@ def load_specs(patterns: List[str]) -> List[Dict[str, Any]]:
         except Exception as e:
             print(f"[spec] skip {p}: {e}", file=sys.stderr)
     return specs
+
+def scan_autotables(bin_bytes: bytes,
+                    shapes=((16,16),(12,16),(16,20),(10,16),(8,16)),
+                    dtypes=("u16","s16"),
+                    endians=("little","big"),
+                    stride_align=2,
+                    topk=6):
+    import numpy as np
+    H=[]
+    n = len(bin_bytes)
+    for dtype in dtypes:
+        itemsize = np.dtype(np.uint16 if dtype=="u16" else np.int16).itemsize
+        for endian in endians:
+            code = ("<" if endian=="little" else ">") + ("u2" if dtype=="u16" else "i2")
+            arr = np.frombuffer(bin_bytes, dtype=np.dtype(code))
+            for rows, cols in shapes:
+                block_items = rows*cols
+                step = max(1, stride_align//itemsize)
+                for i in range(0, len(arr)-block_items, step):
+                    Z = arr[i:i+block_items].astype(np.float64).reshape((rows,cols))
+                    # Score: glatt + sinnvoller Bereich
+                    rng = Z.max()-Z.min()
+                    if not (5 <= rng <= 10000):  # grober Filter
+                        continue
+                    # Laplacian energy (je kleiner, desto glatter)
+                    gy, gx = np.gradient(Z)
+                    lap = (gx**2 + gy**2).mean()
+                    # Monotonie grob
+                    mono = np.mean(np.diff(Z, axis=1) >= 0) + np.mean(np.diff(Z, axis=0) >= 0)
+                    score = lap - 0.1*mono  # niedriger ist besser
+                    H.append((score, i*itemsize, rows, cols, dtype, endian))
+    H.sort(key=lambda x: x[0])
+    return H[:topk]
 
 def index_deepseek(patterns: List[str]) -> Dict[str, Dict[str, Any]]:
     files=[]
