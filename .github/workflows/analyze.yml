@@ -92,27 +92,25 @@ jobs:
           shopt -s nullglob
           FOUND=(mapspecs/*.yml mapspecs/*.yaml)
           if [[ ${#FOUND[@]} -eq 0 ]]; then
-            mkdir -p mapspecs
-            cat > mapspecs/example_torque.yml <<'YAML'
-schema_version: "1.0"
-dataset_hint:
-  brand: "Generic"
-  model: "Example"
-  notes: "Sample spec; set real offsets/sizes for your ECU."
-maps:
-  - name: "Torque_Limit"
-    offset: 0x001000
-    rows: 16
-    cols: 16
-    dtype: u16
-    endian: little
-    scale: 0.1
-    add: 0.0
-    x_axis: { start: 0, step: 250, count: 16, unit: "rpm" }
-    y_axis: { start: 0, step: 10,  count: 16, unit: "load" }
-YAML
-            echo "Wrote mapspecs/example_torque.yml"
-          fi
+            python - <<'PY'
+          import os, yaml
+          os.makedirs("mapspecs", exist_ok=True)
+          doc = {
+            "schema_version": "1.0",
+            "dataset_hint": {"brand":"Generic","model":"Example","notes":"Sample spec; set real offsets/sizes for your ECU."},
+            "maps": [{
+              "name":"Torque_Limit","offset":"0x001000","rows":16,"cols":16,
+              "dtype":"u16","endian":"little","scale":0.1,"add":0.0,
+              "x_axis":{"start":0,"step":250,"count":16,"unit":"rpm"},
+              "y_axis":{"start":0,"step":10,"count":16,"unit":"load"}
+            }]
+          }
+with open("mapspecs/example_torque.yml","w",encoding="utf-8") as f:
+  yaml.safe_dump(doc, f, sort_keys=False)
+print("Wrote mapspecs/example_torque.yml")
+PY
+    fi
+
 
       - name: mapviz.py (self-contained Reporter & Visualizer)
         shell: bash
