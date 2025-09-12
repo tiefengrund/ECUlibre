@@ -1,44 +1,56 @@
+# .github/workflows/ci-suse.yml
 name: CI (openSUSE)
-true:
+
+on:
   push:
     branches:
-    - main
-  pull_request: null
-  workflow_dispatch: null
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   suse:
     runs-on: ubuntu-latest
-    container: opensuse/leap:15.5
+    container:
+      image: registry.opensuse.org/opensuse/leap:15.6
     steps:
-    - name: Install git
-      run: 'zypper -n ref
+      - uses: actions/checkout@v4
 
-        zypper -n in -y git
+      - name: Install base tooling
+        run: |
+          set -euo pipefail
+          zypper -n refresh
+          zypper -n install --no-recommends \
+            git-core bash ca-certificates curl \
+            jq which tar gzip xz \
+            python3 python3-pip
+          # shellcheck (Namensunterschied je nach Repo)
+          zypper -n install --no-recommends shellcheck || zypper -n install --no-recommends ShellCheck || true
+          python3 -m pip install --no-cache-dir --upgrade pip || true
+          python3 -m pip install --no-cache-dir pyyaml jsonschema intelhex || true
 
-        '
-    - uses: actions/checkout@v4
-    - name: Install tools
-      run: 'set -euo pipefail
+      - name: Mark repo as safe (if git exists)
+        run: |
+          if command -v git >/dev/null 2>&1; then
+            git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          fi
 
-        zypper -n in -y ShellCheck python3-pip zip || true
+      - name: Run common checks
+        run: |
+          set -euo pipefail
+          if [ -x scripts/ci_basic.sh ]; then
+            bash scripts/ci_basic.sh || true
+          else
+            echo "scripts/ci_basic.sh not found or not executable, skipping"
+          fi
 
-        python3 -m pip install --upgrade pip || true
-
-        pip3 install pyyaml jsonschema intelhex || true
-
-        '
-    - name: Run common checks
-      run: bash scripts/ci_basic.sh || true
-    - uses: actions/upload-artifact@v4
-      with:
-        name: ci-artifacts-suse
-        path: out
-'on':
-  push:
-    branches:
-    - main
-    - master
-  pull_request: null
-  workflow_dispatch: {}
+      - name: Upload artifacts (if present)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-artifacts-suse
+          path: out
+          if-no-files-found: ignore
