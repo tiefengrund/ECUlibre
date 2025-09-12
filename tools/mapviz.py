@@ -160,10 +160,19 @@ def main():
               f"- Size: `{info['size']}` bytes",
               f"- SHA256: `{info['sha256']}`", "",
               "### Histogram", f"![histogram]({info['hist_png']})", ""]
-        if info["strings"]:
-            md.append("### Strings (first 40)")
-            md += [f"- `{s.replace('|','\\|')}`" for s in info["strings"]]
-            md.append("")
+
+
+    if info["strings"]:
+        md.append("### Strings (first 40)")
+        for s in info["strings"]:
+            s = s.replace("|","\\|")
+            md.append(f"- `{s}`")
+        md.append("")
+
+#        if info["strings"]:
+#            md.append("### Strings (first 40)")
+#            md += [f"- `{s.replace('|','\\|')}`" for s in info["strings"]]
+#            md.append("")
 
         # flatten spec maps
         all_maps=[m for spec in specs for m in (spec.get("maps") or [])]
