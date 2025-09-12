@@ -7,8 +7,8 @@ rawdata/ECU_<modell>_<jahr><name>.bin
 
 ## 2. Präferenz wählen
 Vor jedem Lauf muss klar sein, ob die Analyse mit Fokus auf:
-- **power** → möglichst viel Leistung  
-- **smooth** → ruhiger schalten / komfortorientiert  
+- **power** → möglichst viel Leistung
+- **smooth** → ruhiger schalten / komfortorientiert
 
 laufen soll.
 
@@ -37,4 +37,3 @@ entropy_windows.csv
 block_checksums.csv
 
 maps_summary.csv
-

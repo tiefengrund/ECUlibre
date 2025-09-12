@@ -1,0 +1,152 @@
+# .github/workflows/ecu-reports.yml
+name: ECU Reports (analyze + mapviz in container)
+run-name: ECU Reports • ${{ github.event_name }} • ${{ github.ref_name }} • ${{ github.run_id }}
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+    inputs:
+      bins:         { description: "Glob .bin", type: string, default: "rawdata/**/*.bin" }
+      specs:        { description: "Glob Specs (YAML)", type: string, default: "mapspecs/**/*.y?(a)ml" }
+      deepseek:     { description: "Glob DeepSeek JSON", type: string, default: "deepseek/maps/**/*.json" }
+      outdir_base:  { description: "Base-Output-Verz.", type: string, default: "out" }
+      commit_results: { description: "Ergebnisse nach docs/ committen", type: boolean, default: false }
+      skip_build:   { description: "Image-Build überspringen", type: boolean, default: false }
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/eculibre/dev
+
+jobs:
+  # Optionaler Image-Build (überspringbar per workflow_dispatch: skip_build=true)
+  build:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.skip_build) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build & push image
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            -f .docker/Dockerfile \
+            -t "${IMAGE}:latest" \
+            -t "${IMAGE}:sha-${{ github.sha }}" \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --push .
+      - name: Verify manifests
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:latest"
+          docker buildx imagetools inspect "${IMAGE}:sha-${{ github.sha }}"
+
+  reports:
+    needs: [build]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - kind: analyze
+            script: tools/mapviz.py           # gleicher Runner für beide (dein Skript)
+            outdir_suffix: analysis
+            docs_dir: docs/analysis
+          - kind: mapviz
+            script: tools/mapviz.py
+            outdir_suffix: mapviz
+            docs_dir: docs/mapviz
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/eculibre/dev:latest
+      options: --entrypoint ""
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      # Minimal-Deps nachinstallieren, falls im Image fehlen (tar für checkout, rsync für commit)
+      - name: Ensure base tools in container
+        run: |
+          set -euo pipefail
+          if ! command -v tar >/dev/null 2>&1; then
+            apt-get update && apt-get install -y --no-install-recommends tar gzip xz
+          fi
+          if ! command -v rsync >/dev/null 2>&1; then
+            apt-get update && apt-get install -y --no-install-recommends rsync
+          fi
+          if ! command -v git >/dev/null 2>&1; then
+            apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+          fi
+
+      - name: Resolve inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            BINS="${{ inputs.bins }}"; SPECS="${{ inputs.specs }}"; DEEPSEEK="${{ inputs.deepseek }}"
+            OUTBASE="${{ inputs.outdir_base }}"; COMMIT="${{ inputs.commit_results }}"
+          else
+            BINS="rawdata/**/*.bin"; SPECS="mapspecs/**/*.y?(a)ml"; DEEPSEEK="deepseek/maps/**/*.json"
+            OUTBASE="out"; COMMIT="false"
+          fi
+          echo "BINS=$BINS"       >> "$GITHUB_ENV"
+          echo "SPECS=$SPECS"     >> "$GITHUB_ENV"
+          echo "DEEPSEEK=$DEEPSEEK" >> "$GITHUB_ENV"
+          echo "OUTDIR=$OUTBASE/${{ matrix.outdir_suffix }}" >> "$GITHUB_ENV"
+          echo "COMMIT=$COMMIT"   >> "$GITHUB_ENV"
+
+#      - name: Guard: script exists
+#        run: test -f "${{ matrix.script }}" || { echo "Missing ${{ matrix.script }} – ins Repo oder ins Image legen"; exit 1; }
+#      - uses: actions/upload-artifact@v4
+#        with:
+#          name: ${{ matrix.kind }}-output
+#          path: ${{ env.OUTDIR }}
+#          if-no-files-found: ignore
+#      
+#      - name: Optional commit to docs
+#        if: ${{ env.COMMIT == 'true' }}
+#        run: |
+#          set -euo pipefail
+#          git config user.name  "github-actions[bot]"
+#          git config user.email "github-actions[bot]@users.noreply.github.com"
+#          mkdir -p "${{ matrix.docs_dir }}"
+#          rsync -a "${OUTDIR}/" "${{ matrix.docs_dir }}/"
+#          git add "${{ matrix.docs_dir }}"
+#          git commit -m "docs(${{ matrix.kind }}): update (auto)" || echo "Nothing to commit"
+#          git push  
+
+      - name: Run ${{ matrix.kind }}
+        run: |
+          set -euo pipefail
+          python "${{ matrix.script }}" \
+            --bins     "${BINS}" \
+            --specs    "${SPECS}" \
+            --deepseek "${DEEPSEEK}" \
+            --outdir   "${OUTDIR}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.kind }}-output
+          path: ${{ env.OUTDIR }}
+          if-no-files-found: ignore
+
+      - name: Optional commit to docs
+        if: ${{ env.COMMIT == 'true' }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p "${{ matrix.docs_dir }}"
+          rsync -a "${OUTDIR}/" "${{ matrix.docs_dir }}/"
+          git add "${{ matrix.docs_dir }}"
+          git commit -m "docs(${{ matrix.kind }}): update (auto)" || echo "Nothing to commit"
+          git push

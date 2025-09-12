@@ -1,0 +1,106 @@
+diff --git a/scripts/deepseek_submit_annotations.py b/scripts/deepseek_submit_annotations.py
+index 1111111..2222222 100755
+--- a/scripts/deepseek_submit_annotations.py
++++ b/scripts/deepseek_submit_annotations.py
+@@
+-IN_DIR   = Path("dist/deepseek/incoming")
+-OUT_DIR  = Path("reports/deepseek")
++IN_DIR   = Path("dist/deepseek/incoming")
++OUT_DIR  = Path("reports/china-boeller")
+@@
+-        outp = OUT_DIR / (hp.stem + ".json")
++        outp = OUT_DIR / (hp.stem + ".json")
+         outp.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+-        print(f"annotated: {hp} -> {outp}")
++        print(f"china-boeller annotated: {hp} -> {outp}")
+diff --git a/scripts/hex_visualize_annotations.py b/scripts/hex_visualize_annotations.py
+index 1111111..2222222 100755
+--- a/scripts/hex_visualize_annotations.py
++++ b/scripts/hex_visualize_annotations.py
+@@
+-IN_DIR = Path("dist/deepseek/incoming")
+-ANN_DIR = Path("reports/deepseek")
++IN_DIR = Path("dist/deepseek/incoming")
++ANN_DIR = Path("reports/china-boeller")
+@@
+-        out = ANN_DIR / (hex_path.stem + ".html")
++        out = ANN_DIR / (hex_path.stem + ".html")
+         out.write_text(html_out, encoding="utf-8")
+-        print(f"html: {out}")
++        print(f"china-boeller html: {out}")
+diff --git a/scripts/evaluate_deepseek_reports.py b/scripts/evaluate_deepseek_reports.py
+index 1111111..2222222 100755
+--- a/scripts/evaluate_deepseek_reports.py
++++ b/scripts/evaluate_deepseek_reports.py
+@@
+-ANN_DIR = Path("reports/deepseek")
++ANN_DIR = Path("reports/china-boeller")
+ HEX_DIR = Path("dist/deepseek/incoming")
+diff --git a/.github/workflows/deepseek-annotate.yml b/.github/workflows/deepseek-annotate.yml
+index 1111111..2222222 100644
+--- a/.github/workflows/deepseek-annotate.yml
++++ b/.github/workflows/deepseek-annotate.yml
+@@
+   push:
+     branches: [ "main", "master" ]
+     paths:
+       - 'dist/deepseek/incoming/**/*.hex'
+       - 'dist/deepseek/incoming/*.hex'
+@@
+-      - name: Submit HEX to DeepSeek (get JSON annotations)
++      - name: Submit HEX to DeepSeek (China-Böller JSON)
+         run: python scripts/deepseek_submit_annotations.py
+@@
+-      - name: Build HTML visualization
++      - name: Build HTML visualization (China-Böller)
+         run: python scripts/hex_visualize_annotations.py
+@@
+-      - name: Summary
++      - name: Summary (China-Böller)
+         run: |
+-          echo "### DeepSeek annotation reports" >> "$GITHUB_STEP_SUMMARY"
+-          if compgen -G "reports/deepseek/*.html" > /dev/null; then
+-            for f in reports/deepseek/*.html; do
++          echo "### China-Böller Berichte" >> "$GITHUB_STEP_SUMMARY"
++          if compgen -G "reports/china-boeller/*.html" > /dev/null; then
++            for f in reports/china-boeller/*.html; do
+               echo "* $(basename "$f")" >> "$GITHUB_STEP_SUMMARY"
+             done
+           else
+             echo "* none" >> "$GITHUB_STEP_SUMMARY"
+           fi
+@@
+-      - name: Upload artifacts
++      - name: Upload artifacts (China-Böller)
+         uses: actions/upload-artifact@v4
+         with:
+-          name: deepseek-annotations
++          name: china-boeller
+           path: |
+-            reports/deepseek/*.json
+-            reports/deepseek/*.html
++            reports/china-boeller/*.json
++            reports/china-boeller/*.html
++          if-no-files-found: ignore
+diff --git a/.github/workflows/deepseek-annotate.yml b/.github/workflows/deepseek-annotate.yml
+index 2222222..3333333 100644
+--- a/.github/workflows/deepseek-annotate.yml
++++ b/.github/workflows/deepseek-annotate.yml
+@@
+       - name: Evaluate DeepSeek reports
+         env:
+           MIN_SCORE: "60"
+           FAIL_ON_LOW_SCORE: "0"
+         run: |
+-          python scripts/evaluate_deepseek_reports.py
++          python scripts/evaluate_deepseek_reports.py
+@@
+-      - name: Upload evaluation artifacts
++      - name: Upload evaluation artifacts (China-Böller)
+         uses: actions/upload-artifact@v4
+         with:
+-          name: deepseek-eval
+-          path: reports/deepseek/*.eval.json
++          name: china-boeller-eval
++          path: reports/china-boeller/*.eval.json
+           if-no-files-found: ignore

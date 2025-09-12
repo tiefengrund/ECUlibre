@@ -417,5 +417,3 @@ case "$cmd" in
   ""|-h|--help|help) usage;;
   *) echo "unknown command: $cmd"; usage; exit 2;;
 esac
-
-
