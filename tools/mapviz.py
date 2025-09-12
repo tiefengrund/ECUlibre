@@ -429,12 +429,14 @@ def autodiscover_for_bin(bin_path: str, outdir: str):
     idx_lines = [f"# Auto-discovered tables for `{pathlib.Path(bin_path).name}`",""]
     for k,(score, byte_off, rows, cols, dtype, endian) in enumerate(cands, 1):
         # re-read as specified dtype/endian
-        dt = np.uint16 if dtype=="u16" else np.int16
-        code = ("<" if endian=="little" else ">") + (np.dtype(dt).name)
-        need = rows*cols*np.dtype(dt).itemsize
+        base = np.uint16 if dtype=="u16" else np.int16
+        dt_np = np.dtype(base).newbyteorder('<' if endian=='little' else '>')
+        need = rows*cols*dt_np.itemsize
         buf = dat[byte_off:byte_off+need]
-        if len(buf) < need: continue
-        Z = np.frombuffer(buf, dtype=np.dtype(code)).astype(np.float64).reshape((rows,cols))
+        if len(buf) < need:
+            continue
+        Z = np.frombuffer(buf, dtype=dt_np).astype(np.float64).reshape((rows, cols))
+
         # plausible axes
         X = np.linspace(1000, 1000+250*(cols-1), cols)
         Y = np.linspace(20,   20+5*(rows-1),   rows)
