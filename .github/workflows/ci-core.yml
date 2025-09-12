@@ -9,10 +9,11 @@ on:
 
 permissions:
   contents: read
-  packages: write   # Build-Job muss pushen dürfen
+  packages: write
 
+# IMAGE überall in Steps nutzbar (nicht im container.image)
 env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/eculibre/dev
+  IMAGE: ${{ format('ghcr.io/{0}/eculibre/dev', toLower(github.repository_owner)) }}
 
 jobs:
   build:
@@ -20,11 +21,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU (optional, für multi-arch)
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -50,11 +48,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: read    # nur pullen
+      packages: read
     container:
-      image: ${{ env.IMAGE }}:latest
-      # credentials sind i.d.R. nicht nötig, wenn der Job packages:read hat.
-      # Wenn doch, kannst du sie lassen:
+      # WICHTIG: hier KEIN env.*, sondern direkt github-Kontext verwenden
+      image: ${{ format('ghcr.io/{0}/eculibre/dev:latest', toLower(github.repository_owner)) }}
+      # optional:
       # credentials:
       #   username: ${{ github.actor }}
       #   password: ${{ secrets.GITHUB_TOKEN }}
