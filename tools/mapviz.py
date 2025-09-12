@@ -251,35 +251,35 @@ def main():
                        f"[CSV]({os.path.relpath(csv_path)})  ",
                        f"![{name}]({os.path.relpath(png_pair)})", ""]
                 def heatmap_table_png(png_path, X, Y, Z):
-                """Farbtabelle mit Zahlenbeschriftung im Stil des Beispiels."""
-                import matplotlib.pyplot as plt
-                apply_dark_theme()
-            
-                fig = plt.figure(figsize=(14,5), facecolor="#000")
-                ax = fig.add_subplot(111)
-                im = ax.imshow(Z, aspect="auto", cmap="turbo", origin="upper")
-                # Achsen-Ticks mit echten X/Y-Werten
-                # (bei vielen Zellen nur eine Auswahl, sonst wird's unleserlich)
-                max_ticks = 16
-                x_idx = np.linspace(0, Z.shape[1]-1, min(Z.shape[1], max_ticks), dtype=int)
-                y_idx = np.linspace(0, Z.shape[0]-1, min(Z.shape[0], max_ticks), dtype=int)
-                ax.set_xticks(x_idx, [f"{X[0,i]:.0f}" for i in x_idx], rotation=0)
-                ax.set_yticks(y_idx, [f"{Y[i,0]:.0f}" for i in y_idx])
-            
-                # Zahlenlabel in jeder Zelle (bei großen Matrizen ggf. ausdünnen)
-                step_r = 1 if Z.shape[0] <= 20 else int(np.ceil(Z.shape[0]/20))
-                step_c = 1 if Z.shape[1] <= 20 else int(np.ceil(Z.shape[1]/20))
-                for r in range(0, Z.shape[0], step_r):
-                    for c in range(0, Z.shape[1], step_c):
-                        ax.text(c, r, f"{Z[r,c]:.1f}", ha="center", va="center", fontsize=7, color="#000" if Z[r,c] < Z.mean() else "#fff")
-            
-                ax.set_xlabel("Engine Speed [rpm]")
-                ax.set_ylabel("Inlet Manifold Pressure [kPa]")
-                ax.grid(False)
-                fig.colorbar(im, ax=ax, fraction=0.02, pad=0.02)
-                fig.tight_layout()
-                fig.savefig(png_path, dpi=220, bbox_inches="tight")
-                plt.close(fig)
+                    """Farbtabelle mit Zahlenbeschriftung im Stil des Beispiels."""
+                    import matplotlib.pyplot as plt
+                    apply_dark_theme()
+                
+                    fig = plt.figure(figsize=(14,5), facecolor="#000")
+                    ax = fig.add_subplot(111)
+                    im = ax.imshow(Z, aspect="auto", cmap="turbo", origin="upper")
+                    # Achsen-Ticks mit echten X/Y-Werten
+                    # (bei vielen Zellen nur eine Auswahl, sonst wird's unleserlich)
+                    max_ticks = 16
+                    x_idx = np.linspace(0, Z.shape[1]-1, min(Z.shape[1], max_ticks), dtype=int)
+                    y_idx = np.linspace(0, Z.shape[0]-1, min(Z.shape[0], max_ticks), dtype=int)
+                    ax.set_xticks(x_idx, [f"{X[0,i]:.0f}" for i in x_idx], rotation=0)
+                    ax.set_yticks(y_idx, [f"{Y[i,0]:.0f}" for i in y_idx])
+                
+                    # Zahlenlabel in jeder Zelle (bei großen Matrizen ggf. ausdünnen)
+                    step_r = 1 if Z.shape[0] <= 20 else int(np.ceil(Z.shape[0]/20))
+                    step_c = 1 if Z.shape[1] <= 20 else int(np.ceil(Z.shape[1]/20))
+                    for r in range(0, Z.shape[0], step_r):
+                        for c in range(0, Z.shape[1], step_c):
+                            ax.text(c, r, f"{Z[r,c]:.1f}", ha="center", va="center", fontsize=7, color="#000" if Z[r,c] < Z.mean() else "#fff")
+                
+                    ax.set_xlabel("Engine Speed [rpm]")
+                    ax.set_ylabel("Inlet Manifold Pressure [kPa]")
+                    ax.grid(False)
+                    fig.colorbar(im, ax=ax, fraction=0.02, pad=0.02)
+                    fig.tight_layout()
+                    fig.savefig(png_path, dpi=220, bbox_inches="tight")
+                    plt.close(fig)
         rep = os.path.join(dst, "REPORT.md")
         with open(rep, "w", encoding="utf-8") as f: f.write("\n".join(md) + "\n")
         index_lines.append(f"- [{base}]({os.path.relpath(rep, a.outdir)})")
