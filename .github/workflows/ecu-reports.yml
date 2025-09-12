@@ -17,6 +17,8 @@ on:
 permissions:
   contents: write
   packages: write
+  pull-requests: write
+
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -85,6 +87,21 @@ jobs:
           if ! command -v git >/dev/null 2>&1; then
             apt-get update && apt-get install -y --no-install-recommends git ca-certificates
           fi
+      - name: Debug inputs & matches
+        run: |
+          set -e
+          echo "PWD=$(pwd)"
+          echo "BINS=${BINS}"
+          echo "SPECS=${SPECS}"
+          echo "DEEPSEEK=${DEEPSEEK}"
+          echo "OUTDIR=${OUTDIR}"
+          echo "Mapviz script present? $(test -f tools/mapviz.py && echo yes || echo no)"
+          echo "Matched BIN files:"
+          python - <<'PY'
+          import os, glob, json
+          bins = os.environ.get("BINS","")
+          print("\n".join(sorted(glob.glob(bins, recursive=True))) or "(none)")
+          PY
 
       - name: Resolve inputs
         shell: bash
@@ -138,6 +155,25 @@ jobs:
           name: ${{ matrix.kind }}-output
           path: ${{ env.OUTDIR }}
           if-no-files-found: ignore
+          
+      - name: Stage docs
+        if: ${{ env.COMMIT == 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p ${{ matrix.docs_dir }}
+          rsync -a "${OUTDIR}/" ${{ matrix.docs_dir }}/
+
+      - name: Create PR with docs update
+        if: ${{ env.COMMIT == 'true' }}
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "docs(${{ matrix.kind }}): update (auto)"
+          title: "docs(${{ matrix.kind }}): update (auto) • run ${{ github.run_id }}"
+          body: "Automatisches Update der generierten Reports."
+          branch: "ci/${{ matrix.kind }}-docs-${{ github.run_id }}"
+          delete-branch: true
+          add-paths: |
+            ${{ matrix.docs_dir }}/**
 
       - name: Optional commit to docs
         if: ${{ env.COMMIT == 'true' }}
