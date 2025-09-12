@@ -24,7 +24,7 @@ jobs:
       - name: Mark repo as safe (fix "dubious ownership")
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
         
-            - name: Set up QEMU
+      - name: Set up QEMU
       # multi-arch
         uses: docker/setup-qemu-action@v3
 
