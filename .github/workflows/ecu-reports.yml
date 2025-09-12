@@ -109,7 +109,7 @@ jobs:
       - name: Ensure example spec (idempotent, no heredoc)
         run: |
           python - <<'PY'
-import: os, yaml
+import os, yaml
 os.makedirs("mapspecs", exist_ok=True)
 has = [f for f in os.listdir("mapspecs") if f.endswith((".yml",".yaml"))]
 if not has:
