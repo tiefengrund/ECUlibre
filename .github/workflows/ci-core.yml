@@ -27,12 +27,17 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build & push image
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
+
+          echo "PWD: $(pwd)"
+          test -f docker/Dockerfile || { echo "docker/Dockerfile not found"; ls -la; ls -la docker || true; exit 1; }
+
           docker buildx build \
-            --file ./docker/Dockerfile \
-            --tag "${IMAGE}:latest" \
-            --tag "${IMAGE}:sha-${{ github.sha }}" \
+            --file docker/Dockerfile \
+            --tag "ghcr.io/tiefengrund/eculibre/dev:latest" \
+            --tag "ghcr.io/tiefengrund/eculibre/dev:sha-${{ github.sha }}" \
             --cache-from type=gha \
             --cache-to type=gha,mode=max \
             --push .
