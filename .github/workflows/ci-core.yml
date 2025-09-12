@@ -21,6 +21,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Mark repo as safe (fix "dubious ownership")
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        
+            - name: Set up QEMU
+      # multi-arch
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build & push image
+        run: |
+          set -euo pipefail
+
+          docker buildx build \
+            --file ./docker/Dockerfile \
+            --tag "${IMAGE}:latest" \
+            --tag "${IMAGE}:sha-${{ github.sha }}" \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --push .
+
+      - name: Verify manifest exists
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:latest"
+          docker buildx imagetools inspect "${IMAGE}:sha-${{ github.sha }}"
+
+
       - name: Bootstrap (idempotent)
         run: |
           chmod +x ./eculibre.sh || true
