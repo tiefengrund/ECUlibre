@@ -7,25 +7,20 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write   # Build-Job muss pushen dürfen
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/eculibre/dev
+
 jobs:
-  core:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write        # pull from GHCR
-    container:
-      image: ghcr.io/tiefengrund/eculibre/dev:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Mark repo as safe (fix "dubious ownership")
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-        
-      - name: Set up QEMU
-      # multi-arch
+      - name: Set up QEMU (optional, für multi-arch)
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
@@ -37,7 +32,6 @@ jobs:
       - name: Build & push image
         run: |
           set -euo pipefail
-
           docker buildx build \
             --file ./docker/Dockerfile \
             --tag "${IMAGE}:latest" \
@@ -51,6 +45,30 @@ jobs:
           docker buildx imagetools inspect "${IMAGE}:latest"
           docker buildx imagetools inspect "${IMAGE}:sha-${{ github.sha }}"
 
+  core:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read    # nur pullen
+    container:
+      image: ${{ env.IMAGE }}:latest
+      # credentials sind i.d.R. nicht nötig, wenn der Job packages:read hat.
+      # Wenn doch, kannst du sie lassen:
+      # credentials:
+      #   username: ${{ github.actor }}
+      #   password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mark repo as safe (fix "dubious ownership")
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Print versions
+        run: |
+          cat /etc/os-release || true
+          docker --version || true
+          gh --version || true
 
       - name: Bootstrap (idempotent)
         run: |
