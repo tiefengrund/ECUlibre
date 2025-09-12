@@ -147,8 +147,8 @@ writenew "$ROOT/README.md" "\
 # ECUlibre
 
 ## English (short)
-Open-source workspace for **ECU research** on EU-mandated functions (e.g., lane keeping).  
-**Purpose:** analyze raw ECU files, study feature flags, and build reproducible patch packs.  
+Open-source workspace for **ECU research** on EU-mandated functions (e.g., lane keeping).
+**Purpose:** analyze raw ECU files, study feature flags, and build reproducible patch packs.
 **⚠️ Disclaimer:** Educational & research only; local laws/safety rules apply.
 
 - Start: \`docs/vehicle-index.md\`
@@ -158,8 +158,8 @@ Open-source workspace for **ECU research** on EU-mandated functions (e.g., lane 
 - Contribute: \`CONTRIBUTING.md\` (TBD)
 
 ## Deutsch (kurz)
-Open-Source-Arbeitsbereich für **ECU-Forschung** zu EU-Funktionen (z. B. Spurhalteassistent).  
-**Zweck:** Roh-ECU-Dateien analysieren, Feature-Schalter untersuchen, reproduzierbare Patch-Packs bauen.  
+Open-Source-Arbeitsbereich für **ECU-Forschung** zu EU-Funktionen (z. B. Spurhalteassistent).
+**Zweck:** Roh-ECU-Dateien analysieren, Feature-Schalter untersuchen, reproduzierbare Patch-Packs bauen.
 **⚠️ Hinweis:** Nur Forschung/Lernen; Gesetze/Sicherheitsregeln beachten.
 
 - Einstieg: \`docs/vehicle-index.md\`

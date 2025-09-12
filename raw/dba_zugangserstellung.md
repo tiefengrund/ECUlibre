@@ -10,7 +10,7 @@ Administrative Zugangsdaten (inkl. Passwort-Hashes) können entweder direkt auf 
 
 #### SCRAM-SHA-256 Hash generieren
 ```sql
-SELECT 'SCRAM-SHA-256$4096:' || encode(gen_salt('scram-sha-256'), 'base64') || '$' || 
+SELECT 'SCRAM-SHA-256$4096:' || encode(gen_salt('scram-sha-256'), 'base64') || '$' ||
        encode(digest('password' || gen_salt('scram-sha-256'), 'sha256'), 'base64');
 ```
 

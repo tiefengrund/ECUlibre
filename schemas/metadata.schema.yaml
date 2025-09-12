@@ -17,4 +17,3 @@ properties:
     properties:
       raw_sha256: { type: string }
       size_bytes: { type: integer }
-

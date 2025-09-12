@@ -27,4 +27,3 @@
 - Zuordnung Patch-Pack ↔ Dataset in `docs/compatibility.md`.
 ### Branching
 - Trunk-based: `main` releasbar; Feature-Branches → PR → Tags.
-

@@ -56,14 +56,14 @@ diff --git a/.github/workflows/hex.yml b/.github/workflows/hex.yml
 +++ b/.github/workflows/hex.yml
 @@
  name: BIN → HEX exporter
- 
+
  on:
    push:
 -    branches: [ "main" ]
 +    branches: [ "master" ]
    pull_request:
    workflow_dispatch:
- 
+
  permissions:
    contents: read
 diff --git a/scripts/add_header_comment.sh b/scripts/add_header_comment.sh
