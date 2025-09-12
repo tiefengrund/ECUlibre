@@ -162,7 +162,8 @@ def read_map_from_bin(bin_path, m: Dict[str,Any]) -> np.ndarray:
         f.seek(off)
         buf=f.read(need)
         if len(buf)<need: raise ValueError(f"Not enough bytes at 0x{off:X} need {need} got {len(buf)}")
-        arr = np.frombuffer(buf, dtype=np.dtype(ENDIANS[endian]+DTYPES[dtype].name))
+        dt = np.dtype(DTYPES[dtype]).newbyteorder(ENDIANS[endian])  # '<' oder '>'
+        arr = np.frombuffer(buf, dtype=dt)
         arr = arr.reshape((rows, cols)).astype(np.float64)
         arr = arr*scale + add
         return arr
